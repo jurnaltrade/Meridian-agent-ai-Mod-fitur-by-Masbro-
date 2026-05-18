@@ -184,6 +184,7 @@ let _cronTasks = [];
 let _managementBusy = false; // prevents overlapping management cycles
 let _lastMgmtSuccessAt = Date.now(); // AR stuck-watchdog reference (poller)
 let _screeningBusy = false;  // prevents overlapping screening cycles
+let _briefingInFlight = false; // dedup: scheduled briefing vs missed-briefing watchdog (TOCTOU guard)
 let _deployCapNoticeAt = 0;  // epoch ms — throttle the "deploy paused" Telegram notice
 const DEPLOY_CAP_NOTICE_MS = 60 * 60 * 1000; // at most one notice/hour while capped
 let _screeningLastTriggered = 0; // epoch ms — prevents management from spamming screening
@@ -277,6 +278,7 @@ function scheduleTrailingDropConfirmation(positionAddress) {
 
 async function runBriefing() {
   log("cron", "Starting morning briefing");
+  _briefingInFlight = true;
   try {
     const briefing = await generateBriefing();
     // Daily briefing is the one digest AR's promotion-only bot may send
@@ -291,6 +293,8 @@ async function runBriefing() {
     setLastBriefingDate(briefingDateParts(config.schedule.briefingTimezone).date);
   } catch (error) {
     log("cron_error", `Morning briefing failed: ${error.message}`);
+  } finally {
+    _briefingInFlight = false;
   }
 }
 
@@ -301,6 +305,12 @@ async function runBriefing() {
  * boundary matches the cron and the "already sent" dedupe.
  */
 async function maybeRunMissedBriefing() {
+  // A scheduled briefing is already running (e.g. cron just fired and is
+  // still inside generateBriefing()). _lastBriefingDate is only persisted
+  // *after* that completes, so without this guard the watchdog would read
+  // a stale date and fire a duplicate. (Root cause of the 07:00-WIB double.)
+  if (_briefingInFlight) return;
+
   const { date: today, hour } = briefingDateParts(config.schedule.briefingTimezone);
   const lastSent = getLastBriefingDate();
 
@@ -975,8 +985,13 @@ Summarize the current portfolio health, total fees earned, and performance of al
     await runBriefing();
   }, { timezone: briefingZone });
 
-  // Every 6h — catch up if briefing was missed (agent restart, crash, etc.)
-  const briefingWatchdog = cron.schedule(`0 */6 * * *`, async () => {
+  // Catch up if the briefing was missed (agent restart, crash, etc.).
+  // Runs at 03/09/15/21 UTC — deliberately offset so no slot ever lands
+  // on the scheduled-briefing instant (07:00 Asia/Jakarta = 00:00 UTC),
+  // which otherwise made this watchdog fire a duplicate every day. The
+  // _briefingInFlight guard in maybeRunMissedBriefing is the belt; this
+  // offset is the suspenders for non-default briefing timezones.
+  const briefingWatchdog = cron.schedule(`0 3,9,15,21 * * *`, async () => {
     await maybeRunMissedBriefing();
   }, { timezone: 'UTC' });
 
