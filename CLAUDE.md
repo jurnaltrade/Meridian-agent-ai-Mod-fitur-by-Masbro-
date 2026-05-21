@@ -78,7 +78,8 @@ Sets defined in `agent.js:6-7`. If you add a tool, also add it to the relevant s
 | timeframe | screening | "5m" |
 | category | screening | "trending" |
 | minTokenFeesSol | screening | 30 |
-| maxBundlersPct | screening | 30 |
+| maxVolatility | screening | null |
+| maxBundlePct | screening | 30 |
 | maxTop10Pct | screening | 60 |
 | blockedLaunchpads | screening | [] |
 | deployAmountSol | management | 0.5 |
@@ -161,7 +162,7 @@ Two signals used in `getTokenHolders()`:
 - `common_funder` — multiple wallets funded by same source
 - `funded_same_window` — multiple wallets funded in same time window
 
-**Thresholds in config**: `maxBundlersPct` (default 30%), `maxTop10Pct` (default 60%)
+**Thresholds in config**: `maxBundlePct` (default 30%), `maxTop10Pct` (default 60%)
 Jupiter audit API: `botHoldersPercentage` (5–25% is normal for legitimate tokens)
 
 ---
@@ -194,7 +195,7 @@ const actualBaseFee = baseFactor > 0
 - `getLessonsForPrompt({ agentType })` — injects relevant lessons into system prompt
 - `evolveThresholds()` — adjusts screening thresholds based on winners vs losers
 - Performance recorded via `recordPerformance()` called from executor.js after `close_position`
-- **Known issue**: `evolveThresholds()` references `maxVolatility` and `minFeeTvlRatio` but config.js uses `minFeeActiveTvlRatio` and has no `maxVolatility` key — the evolution of these keys is a no-op
+- `evolveThresholds()` now correctly references `minFeeActiveTvlRatio` (was `minFeeTvlRatio`) and `maxVolatility` (added to config.js)
 
 ---
 
@@ -224,5 +225,5 @@ Agent Meridian HiveMind sync is handled by `hivemind.js`. It uses built-in Agent
 
 ## Known Issues / Tech Debt
 
-- `lessons.js evolveThresholds()` evolves `maxVolatility` + `minFeeTvlRatio` (wrong key names — should be `minFeeActiveTvlRatio`; `maxVolatility` doesn't exist in config at all). The evolution is a no-op for those keys.
+- `lessons.js evolveThresholds()` evolves `maxVolatility` + `minFeeActiveTvlRatio` (fixed from `minFeeTvlRatio`). Both keys now exist in config.js and are properly applied.
 - `get_wallet_positions` tool (dlmm.js) is in definitions.js but not in MANAGER_TOOLS or SCREENER_TOOLS — only available in GENERAL role.
