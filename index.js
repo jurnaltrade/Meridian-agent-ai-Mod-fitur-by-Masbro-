@@ -966,8 +966,10 @@ Summarize the current portfolio health, total fees earned, and performance of al
   // Store interval refs so stopCronJobs can clear them
   _cronTasks._pnlPollInterval = pnlPollInterval;
   _cronTasks._dumpCheckInterval = dumpCheckInterval;
+  const dumpSec  = config.management.dumpCheckIntervalSec;
+  const dumpAuto = config.management.dumpCheckIntervalSecAuto;
   const dumpStatus = config.management.dumpDetectionEnabled
-    ? `dump check every ${config.management.dumpCheckIntervalSec}s`
+    ? `dump check every ${dumpSec}s${dumpAuto ? " (auto, 1/3 of management)" : ""}`
     : "dump check disabled";
   log("cron", `Cycles started — management every ${config.schedule.managementIntervalMin}m, screening every ${config.schedule.screeningIntervalMin}m, ${dumpStatus}`);
 }
