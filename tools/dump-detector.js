@@ -155,12 +155,13 @@ export function checkDumpSignals(trackedPos, poolDetail, tokenInfo, cfg) {
   //     volume_5m / tvl >= dumpVolSpike5mPct  →  ada aktivitas besar mendadak
   //     DAN price_change_pct < 0              →  arahnya turun (bukan pump)
   const volSpike5mThreshold = cfg.dumpVolSpike5mPct ?? 20;
+  const volSpikePriceMin    = cfg.dumpVolSpikePriceMinPct ?? -5;
   const vol5m = poolDetail?.volume_window ?? null;
   metrics.vol_5m = vol5m;
   if (
     vol5m !== null && vol5m > 0 &&
     currentTvl !== null && currentTvl > 0 &&
-    priceDrop5m !== null && priceDrop5m < 0
+    priceDrop5m !== null && priceDrop5m <= volSpikePriceMin
   ) {
     const volSpikePct = (vol5m / currentTvl) * 100;
     metrics.vol_spike_pct = parseFloat(volSpikePct.toFixed(1));
@@ -168,7 +169,7 @@ export function checkDumpSignals(trackedPos, poolDetail, tokenInfo, cfg) {
       signals.push(
         `volume spike: vol 5m = ${volSpikePct.toFixed(0)}% TVL saat harga turun ${priceDrop5m.toFixed(1)}% ` +
         `($${Math.round(vol5m).toLocaleString()} / TVL $${Math.round(currentTvl).toLocaleString()}) ` +
-        `(threshold: >${volSpike5mThreshold}% TVL & harga turun)`
+        `(threshold: >${volSpike5mThreshold}% TVL & harga <=${volSpikePriceMin}%)`
       );
     }
   }

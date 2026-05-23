@@ -429,7 +429,8 @@ const toolMap = {
       dumpSellBuyRatio:      ["management", "dumpSellBuyRatio"],
       dumpSellPctOfTvl:      ["management", "dumpSellPctOfTvl"],
       dumpMcapDropPct:       ["management", "dumpMcapDropPct"],
-      dumpVolSpike5mPct:     ["management", "dumpVolSpike5mPct"],
+      dumpVolSpike5mPct:        ["management", "dumpVolSpike5mPct"],
+      dumpVolSpikePriceMinPct:  ["management", "dumpVolSpikePriceMinPct"],
       // risk
       maxPositions: ["risk", "maxPositions"],
       maxDeployAmount: ["risk", "maxDeployAmount"],
