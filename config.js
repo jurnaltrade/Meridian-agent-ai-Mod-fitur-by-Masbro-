@@ -198,13 +198,6 @@ export const config = {
     // ── Dump Detection ───────────────────────────────────────────────────
     // Semua setting bisa diatur di user-config.json
     dumpDetectionEnabled:  u.dumpDetectionEnabled  ?? true,
-    // Seberapa sering cek dump (detik).
-    // Kalau tidak diisi, auto = 1/3 dari managementIntervalMin (min 30s).
-    // Contoh: management 10m → dump check 200s; management 30m → dump check 600s.
-    // Override di user-config.json: "dumpCheckIntervalSec": 60
-    dumpCheckIntervalSec:  u.dumpCheckIntervalSec  ?? Math.max(30, Math.round((u.managementIntervalMin ?? 10) * 60 / 3)),
-    // Flag internal: apakah dumpCheckIntervalSec di-set user atau auto dari management interval
-    dumpCheckIntervalSecAuto: !u.dumpCheckIntervalSec,
     // Threshold harga turun (%) dalam window 5m. Default -15%.
     dumpPriceDrop5mPct:    u.dumpPriceDrop5mPct    ?? -15,
     // Threshold TVL turun (%) vs saat deploy. Default -30% (LP besar keluar).

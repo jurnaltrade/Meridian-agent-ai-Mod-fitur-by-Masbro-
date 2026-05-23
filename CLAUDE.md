@@ -89,7 +89,6 @@ Sets defined in `agent.js:6-7`. If you add a tool, also add it to the relevant s
 | minSolToOpen | management | 0.55 |
 | outOfRangeWaitMinutes | management | 30 |
 | dumpDetectionEnabled | management | true |
-| dumpCheckIntervalSec | management | auto (1/3 of managementIntervalMin, min 30s) |
 | dumpPriceDrop5mPct | management | -15 |
 | dumpLpRemovalPct | management | -30 |
 | dumpSellBuyRatio | management | 5 |
