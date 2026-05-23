@@ -423,6 +423,7 @@ const toolMap = {
       minAgeBeforeYieldCheck: ["management", "minAgeBeforeYieldCheck"],
       // dump detection
       dumpDetectionEnabled:  ["management", "dumpDetectionEnabled"],
+      dumpCheckIntervalSec:  ["management", "dumpCheckIntervalSec"],
       dumpPriceDrop5mPct:    ["management", "dumpPriceDrop5mPct"],
       dumpLpRemovalPct:      ["management", "dumpLpRemovalPct"],
       dumpSellBuyRatio:      ["management", "dumpSellBuyRatio"],
@@ -628,6 +629,7 @@ const toolMap = {
     const intervalChanged =
       applied.managementIntervalMin  != null ||
       applied.screeningIntervalMin   != null ||
+      applied.dumpCheckIntervalSec   != null ||
       applied.dumpDetectionEnabled   != null;
     if (intervalChanged && _cronRestarter) {
       _cronRestarter();

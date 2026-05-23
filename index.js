@@ -251,7 +251,8 @@ async function maybeRunMissedBriefing() {
 
 function stopCronJobs() {
   for (const task of _cronTasks) task.stop();
-  if (_cronTasks._pnlPollInterval)  clearInterval(_cronTasks._pnlPollInterval);
+  if (_cronTasks._pnlPollInterval)   clearInterval(_cronTasks._pnlPollInterval);
+  if (_cronTasks._dumpCheckInterval) clearInterval(_cronTasks._dumpCheckInterval);
   _cronTasks = [];
 }
 
@@ -308,38 +309,10 @@ export async function runManagementCycle({ silent = false } = {}) {
       }
     }
 
-    // ── Dump detection (no LLM, runs inside management cycle) ───────
-    const dumpMap = new Map(); // position → reason
-    if (config.management.dumpDetectionEnabled) {
-      for (const p of positionData) {
-        if (!p.pool) continue;
-        const tracked = getTrackedPosition(p.position);
-        const { poolDetail, tokenInfo } = await fetchDumpContext(
-          p.pool,
-          tracked?.base_mint || null,
-        ).catch(() => ({ poolDetail: null, tokenInfo: null }));
-        const { isDump, reason } = checkDumpSignals(
-          tracked || p,
-          poolDetail,
-          tokenInfo,
-          config.management,
-        );
-        if (!isDump) continue;
-        dumpMap.set(p.position, reason);
-        log("dump_warn", reason);
-        if (telegramEnabled()) sendMessage(`⚠️ ${reason}`).catch(() => {});
-      }
-    }
-
     // ── Deterministic rule checks (no LLM) ──────────────────────────
     // action: CLOSE | CLAIM | STAY | INSTRUCTION (needs LLM)
     const actionMap = new Map();
     for (const p of positionData) {
-      // Dump detected — close immediately, highest priority
-      if (dumpMap.has(p.position)) {
-        actionMap.set(p.position, { action: "CLOSE", rule: "dump", reason: dumpMap.get(p.position) });
-        continue;
-      }
       // Hard exit — highest priority
       if (exitMap.has(p.position)) {
         actionMap.set(p.position, { action: "CLOSE", rule: "exit", reason: exitMap.get(p.position) });
@@ -941,10 +914,46 @@ Summarize the current portfolio health, total fees earned, and performance of al
     }
   }, 30_000);
 
+  // ── Dump Detection ──────────────────────────────────────────────────
+  // Interval terpisah, bisa diatur di user-config.json: "dumpCheckIntervalSec": 60
+  let _dumpCheckBusy = false;
+  const dumpCheckIntervalMs = Math.max(10, config.management.dumpCheckIntervalSec) * 1000;
+  const dumpCheckInterval = config.management.dumpDetectionEnabled
+    ? setInterval(async () => {
+        if (_managementBusy || _dumpCheckBusy) return;
+        const openPositions = getTrackedPositions(true);
+        if (openPositions.length === 0) return;
+        _dumpCheckBusy = true;
+        try {
+          for (const trackedPos of openPositions) {
+            if (!trackedPos.pool) continue;
+            const { poolDetail, tokenInfo } = await fetchDumpContext(
+              trackedPos.pool,
+              trackedPos.base_mint || null,
+            ).catch(() => ({ poolDetail: null, tokenInfo: null }));
+            const { isDump, reason } = checkDumpSignals(
+              trackedPos, poolDetail, tokenInfo, config.management,
+            );
+            if (!isDump) continue;
+            log("dump_warn", reason);
+            if (telegramEnabled()) sendMessage(`⚠️ ${reason}`).catch(() => {});
+            _pollTriggeredAt = 0;
+            runManagementCycle({ silent: true }).catch((e) =>
+              log("cron_error", `Dump-triggered management failed: ${e.message}`)
+            );
+            break;
+          }
+        } finally {
+          _dumpCheckBusy = false;
+        }
+      }, dumpCheckIntervalMs)
+    : null;
+
   _cronTasks = [mgmtTask, screenTask, healthTask, briefingTask, briefingWatchdog];
-  _cronTasks._pnlPollInterval = pnlPollInterval;
+  _cronTasks._pnlPollInterval  = pnlPollInterval;
+  _cronTasks._dumpCheckInterval = dumpCheckInterval;
   const dumpStatus = config.management.dumpDetectionEnabled
-    ? "dump check inline (each management cycle)"
+    ? `dump check every ${config.management.dumpCheckIntervalSec}s`
     : "dump check disabled";
   log("cron", `Cycles started — management every ${config.schedule.managementIntervalMin}m, screening every ${config.schedule.screeningIntervalMin}m, ${dumpStatus}`);
 }

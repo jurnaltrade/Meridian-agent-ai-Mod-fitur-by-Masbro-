@@ -198,6 +198,8 @@ export const config = {
     // ── Dump Detection ───────────────────────────────────────────────────
     // Semua setting bisa diatur di user-config.json
     dumpDetectionEnabled:  u.dumpDetectionEnabled  ?? true,
+    // Seberapa sering cek dump (detik). Set di user-config.json: "dumpCheckIntervalSec": 60
+    dumpCheckIntervalSec:  u.dumpCheckIntervalSec  ?? 60,
     // Threshold harga turun (%) dalam window 5m. Default -15%.
     dumpPriceDrop5mPct:    u.dumpPriceDrop5mPct    ?? -15,
     // Threshold TVL turun (%) vs saat deploy. Default -30% (LP besar keluar).
