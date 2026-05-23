@@ -943,10 +943,21 @@ Summarize the current portfolio health, total fees earned, and performance of al
             }
             log("dump_warn", reason);
             if (telegramEnabled()) sendMessage(reason).catch(() => {});
-            _pollTriggeredAt = 0;
-            runManagementCycle({ silent: true }).catch((e) =>
-              log("cron_error", `Dump-triggered management failed: ${e.message}`)
-            );
+
+            // Langsung close tanpa tunggu LLM — dump = emergency, tidak perlu deliberasi
+            // executeTool handles: on-chain close + recordPerformance + auto-swap + notifyClose
+            log("dump_warn", `[${pair}] Closing position immediately — ${trackedPos.position}`);
+            executeTool("close_position", {
+              position_address: trackedPos.position,
+              reason: reason,
+            }).then(result => {
+              log("dump_warn", `[${pair}] Closed — ${result?.success ? "OK" : JSON.stringify(result)}`);
+            }).catch(e => {
+              log("cron_error", `Dump close failed [${pair}]: ${e.message}`);
+              // Fallback: trigger management cycle kalau direct close gagal
+              _pollTriggeredAt = 0;
+              runManagementCycle({ silent: true }).catch(() => {});
+            });
             break;
           }
         } finally {
