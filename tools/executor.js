@@ -427,6 +427,7 @@ const toolMap = {
       dumpPriceDrop5mPct:    ["management", "dumpPriceDrop5mPct"],
       dumpLpRemovalPct:      ["management", "dumpLpRemovalPct"],
       dumpSellBuyRatio:      ["management", "dumpSellBuyRatio"],
+      dumpSellPctOfTvl:      ["management", "dumpSellPctOfTvl"],
       dumpMcapDropPct:       ["management", "dumpMcapDropPct"],
       // risk
       maxPositions: ["risk", "maxPositions"],

@@ -4,7 +4,11 @@
  * Mendeteksi dump mendadak pada posisi terbuka dengan mengecek:
  *   1. Price crash   — price_change_pct 5m window (default threshold: -15%)
  *   2. LP removal    — TVL turun vs baseline saat deploy (default: -30%)
- *   3. Sell pressure — sell_vol / buy_vol ratio 1h (default: ≥ 5×)
+ *   3. Sell pressure — sell_vol harus memenuhi DUA kondisi sekaligus:
+ *                        a) sell_vol / buy_vol >= dumpSellBuyRatio (default: 3×)
+ *                        b) sell_vol / current_tvl >= dumpSellPctOfTvl (default: 15%)
+ *                      Kondisi (b) menormalisasi ke ukuran pool sehingga 1 whale sell
+ *                      besar di pool TVL besar tidak langsung trigger false positive.
  *   4. MC drop       — market cap turun vs baseline saat deploy (default: -25%)
  *
  * Semua threshold bisa diatur via user-config.json (lihat config.js management block).
@@ -88,24 +92,39 @@ export function checkDumpSignals(trackedPos, poolDetail, tokenInfo, cfg) {
     }
   }
 
-  // ── 3. Tekanan jual (sell/buy volume ratio 1h) ──────────────────────────
-  const sellBuyThreshold = cfg.dumpSellBuyRatio ?? 5;
+  // ── 3. Tekanan jual — dua kondisi harus terpenuhi sekaligus ────────────
+  //
+  //   (a) sell_vol / buy_vol >= dumpSellBuyRatio   → tekanan jual relatif ke buyer
+  //   (b) sell_vol / current_tvl >= dumpSellPctOfTvl → normalisasi ke ukuran pool
+  //
+  //   Kondisi (b) mencegah false positive: 1 whale sell $50k di pool $1M TVL
+  //   menghasilkan sell/TVL = 5% (tidak signifikan), meski ratio-nya tinggi.
+  //   Di pool kecil ($80k TVL), $50k sell = 62% → memang berbahaya.
+  const ratioThreshold  = cfg.dumpSellBuyRatio    ?? 3;
+  const tvlPctThreshold = cfg.dumpSellPctOfTvl    ?? 15;
   const sellVol = parseFloat(tokenInfo?.stats_1h?.sell_vol ?? 0);
   const buyVol  = parseFloat(tokenInfo?.stats_1h?.buy_vol  ?? 0);
   metrics.sell_vol_1h = sellVol;
   metrics.buy_vol_1h  = buyVol;
-  if (buyVol > 0 && sellVol / buyVol >= sellBuyThreshold) {
-    const ratio = (sellVol / buyVol).toFixed(1);
-    metrics.sell_buy_ratio = parseFloat(ratio);
-    signals.push(
-      `tekanan jual: sell/buy = ${ratio}× ($${Math.round(sellVol).toLocaleString()} / $${Math.round(buyVol).toLocaleString()}) ` +
-      `(threshold: ${sellBuyThreshold}×)`
-    );
-  } else if (buyVol === 0 && sellVol > 50) {
-    metrics.sell_buy_ratio = null; // infinite
-    signals.push(
-      `tidak ada pembeli: sell $${Math.round(sellVol).toLocaleString()}, buy $0`
-    );
+
+  if (currentTvl !== null && currentTvl > 0 && sellVol > 0) {
+    const sellPctOfTvl = (sellVol / currentTvl) * 100;
+    metrics.sell_pct_of_tvl = parseFloat(sellPctOfTvl.toFixed(1));
+
+    const ratioOk  = buyVol > 0
+      ? sellVol / buyVol >= ratioThreshold
+      : sellVol > 50; // tidak ada pembeli sama sekali → langsung lolos syarat ratio
+    const tvlPctOk = sellPctOfTvl >= tvlPctThreshold;
+
+    if (ratioOk && tvlPctOk) {
+      const ratioStr = buyVol > 0 ? `${(sellVol / buyVol).toFixed(1)}×` : "∞";
+      metrics.sell_buy_ratio = buyVol > 0 ? parseFloat((sellVol / buyVol).toFixed(1)) : null;
+      signals.push(
+        `tekanan jual: sell/buy = ${ratioStr}, sell = ${sellPctOfTvl.toFixed(0)}% TVL ` +
+        `($${Math.round(sellVol).toLocaleString()} / TVL $${Math.round(currentTvl).toLocaleString()}) ` +
+        `(threshold: >${ratioThreshold}× & >${tvlPctThreshold}% TVL)`
+      );
+    }
   }
 
   // ── 4. MC turun (vs baseline saat deploy) ──────────────────────────────

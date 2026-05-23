@@ -92,7 +92,8 @@ Sets defined in `agent.js:6-7`. If you add a tool, also add it to the relevant s
 | dumpCheckIntervalSec | management | 60 |
 | dumpPriceDrop5mPct | management | -15 |
 | dumpLpRemovalPct | management | -30 |
-| dumpSellBuyRatio | management | 5 |
+| dumpSellBuyRatio | management | 3 (AND dumpSellPctOfTvl, keduanya wajib) |
+| dumpSellPctOfTvl | management | 15 (sell vol 1h harus ≥ X% dari TVL pool) |
 | dumpMcapDropPct | management | -25 |
 | managementIntervalMin | schedule | 10 |
 | screeningIntervalMin | schedule | 30 |

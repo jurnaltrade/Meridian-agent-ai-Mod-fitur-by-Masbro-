@@ -205,7 +205,11 @@ export const config = {
     // Threshold TVL turun (%) vs saat deploy. Default -30% (LP besar keluar).
     dumpLpRemovalPct:      u.dumpLpRemovalPct      ?? -30,
     // Threshold rasio sell/buy volume (1h). Default 5× (sell 5x lebih besar dari buy).
-    dumpSellBuyRatio:      u.dumpSellBuyRatio      ?? 5,
+    // Rasio sell/buy — harus >= ini DAN sell_vol >= dumpSellPctOfTvl (dua-duanya wajib)
+    dumpSellBuyRatio:      u.dumpSellBuyRatio      ?? 3,
+    // Sell volume 1h harus >= X% dari TVL pool saat ini — normalisasi ke ukuran pool
+    // Cegah false positive: 1 whale sell besar di pool TVL besar tidak auto trigger
+    dumpSellPctOfTvl:      u.dumpSellPctOfTvl      ?? 15,
     // Threshold MC turun (%) vs saat deploy. Default -25%.
     dumpMcapDropPct:       u.dumpMcapDropPct       ?? -25,
   },
