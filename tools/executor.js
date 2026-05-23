@@ -421,6 +421,13 @@ const toolMap = {
       gasReserve: ["management", "gasReserve"],
       positionSizePct: ["management", "positionSizePct"],
       minAgeBeforeYieldCheck: ["management", "minAgeBeforeYieldCheck"],
+      // dump detection
+      dumpDetectionEnabled:  ["management", "dumpDetectionEnabled"],
+      dumpCheckIntervalSec:  ["management", "dumpCheckIntervalSec"],
+      dumpPriceDrop5mPct:    ["management", "dumpPriceDrop5mPct"],
+      dumpLpRemovalPct:      ["management", "dumpLpRemovalPct"],
+      dumpSellBuyRatio:      ["management", "dumpSellBuyRatio"],
+      dumpMcapDropPct:       ["management", "dumpMcapDropPct"],
       // risk
       maxPositions: ["risk", "maxPositions"],
       maxDeployAmount: ["risk", "maxDeployAmount"],
@@ -618,11 +625,15 @@ const toolMap = {
       fs.writeFileSync(GMGN_CONFIG_PATH, JSON.stringify(gmgnConfig, null, 2));
     }
 
-    // Restart cron jobs if intervals changed
-    const intervalChanged = applied.managementIntervalMin != null || applied.screeningIntervalMin != null;
+    // Restart cron jobs if intervals or dump detection settings changed
+    const intervalChanged =
+      applied.managementIntervalMin  != null ||
+      applied.screeningIntervalMin   != null ||
+      applied.dumpCheckIntervalSec   != null ||
+      applied.dumpDetectionEnabled   != null;
     if (intervalChanged && _cronRestarter) {
       _cronRestarter();
-      log("config", `Cron restarted — management: ${config.schedule.managementIntervalMin}m, screening: ${config.schedule.screeningIntervalMin}m`);
+      log("config", `Cron restarted — management: ${config.schedule.managementIntervalMin}m, screening: ${config.schedule.screeningIntervalMin}m, dump check: ${config.management.dumpCheckIntervalSec}s (${config.management.dumpDetectionEnabled ? "enabled" : "disabled"})`);
     }
 
     // Save as a lesson — but skip ephemeral per-deploy interval changes
