@@ -730,7 +730,7 @@ export async function executeTool(name, args) {
             .catch(() => {}); // non-fatal
         }
       } else if (name === "close_position") {
-        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0 }).catch(() => {});
+        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0, reason: args.reason ?? null }).catch(() => {});
         if (process.env.MERIDIAN_PROFILE === "autoresearch" && config.autoresearch?.runId) {
           writeRunResult(config.autoresearch.runId, result, args);
         }
