@@ -37,7 +37,7 @@ if (u.walletKey) process.env.WALLET_PRIVATE_KEY ||= u.walletKey;
 if (u.llmModel)  process.env.LLM_MODEL          ||= u.llmModel;
 if (u.llmBaseUrl) process.env.LLM_BASE_URL      ||= u.llmBaseUrl;
 if (u.llmApiKey)  process.env.LLM_API_KEY       ||= u.llmApiKey;
-if (u.dryRun !== undefined) process.env.DRY_RUN ||= String(u.dryRun);
+if (u.dryRun !== undefined) process.env.DRY_RUN = String(u.dryRun);
 if (u.publicApiKey) process.env.PUBLIC_API_KEY ||= u.publicApiKey;
 if (u.agentMeridianApiUrl) process.env.AGENT_MERIDIAN_API_URL ||= u.agentMeridianApiUrl;
 
@@ -205,6 +205,13 @@ export const config = {
     requireAllIntervals: indicatorUserConfig.requireAllIntervals ?? false,
   },
 };
+
+export function computeMinOpenBalance(deployAmountSol = config.management.deployAmountSol) {
+  const configuredFloor = Number(config.management.minSolToOpen ?? 0);
+  const deployAmount = Number(deployAmountSol ?? 0);
+  const gasReserve = Number(config.management.gasReserve ?? 0);
+  return parseFloat(Math.max(configuredFloor, deployAmount + gasReserve).toFixed(2));
+}
 
 /**
  * Compute the optimal deploy amount for a given wallet balance.

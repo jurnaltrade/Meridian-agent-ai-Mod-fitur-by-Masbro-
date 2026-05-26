@@ -8,7 +8,7 @@ import { log } from "./logger.js";
 import { getMyPositions, closePosition, getActiveBin } from "./tools/dlmm.js";
 import { getWalletBalances } from "./tools/wallet.js";
 import { getTopCandidates } from "./tools/screening.js";
-import { config, reloadScreeningThresholds, computeDeployAmount } from "./config.js";
+import { config, reloadScreeningThresholds, computeDeployAmount, computeMinOpenBalance } from "./config.js";
 import { evolveThresholds, getPerformanceSummary } from "./lessons.js";
 import { executeTool, registerCronRestarter } from "./tools/executor.js";
 import {
@@ -40,10 +40,20 @@ const isMain = entrypointPath
   ? path.resolve(entrypointPath) === fileURLToPath(import.meta.url)
   : false;
 
+function logStartupConfigWarnings() {
+  if (config.screening.useDiscordSignals && !process.env.LPAGENT_API_KEY) {
+    log(
+      "startup_warn",
+      "Discord signals are enabled, but LPAGENT_API_KEY is not set. Top LPer monitoring and LPAgent-backed PnL checks will stay unavailable.",
+    );
+  }
+}
+
 if (isMain) {
   log("startup", "DLMM LP Agent starting...");
-  log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
+  log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : `LIVE (opens at >= ${computeMinOpenBalance()} SOL)`}`);
   log("startup", `Model: ${process.env.LLM_MODEL || "hermes-3-405b"}`);
+  logStartupConfigWarnings();
   ensureAgentId();
   bootstrapHiveMind().catch((error) => log("hivemind_warn", `Bootstrap failed: ${error.message}`));
   startHiveMindBackgroundSync();
@@ -126,7 +136,7 @@ async function notifyOperators(message) {
 
 if (isMain) {
   notifyOperators(
-    `🟢 Meridian started\nMode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}\nPID: ${process.pid}\nPM2: ${process.env.pm_id ?? "n/a"}`
+    `🟢 Meridian started\nMode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : `LIVE (opens at >= ${computeMinOpenBalance()} SOL)`}\nPID: ${process.pid}\nPM2: ${process.env.pm_id ?? "n/a"}`
   ).catch(() => {});
 }
 
@@ -417,11 +427,11 @@ export async function runScreeningCycle({ silent = false } = {}) {
       _screeningBusy = false;
       return screenReport;
     }
-    const minRequired = config.management.deployAmountSol + config.management.gasReserve;
+    const minRequired = computeMinOpenBalance();
     const isDryRun = process.env.DRY_RUN === "true";
     if (!isDryRun && preBalance.sol < minRequired) {
-      log("cron", `Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} < ${minRequired} needed for deploy + gas)`);
-      screenReport = `Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} < ${minRequired} needed for deploy + gas).`;
+      log("cron", `Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} < ${minRequired} minimum wallet SOL to open)`);
+      screenReport = `Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} < ${minRequired} minimum wallet SOL to open).`;
       appendDecision({
         type: "skip",
         actor: "SCREENER",
@@ -1028,6 +1038,7 @@ function formatWalletStatus(wallet, positions) {
     `SOL price: $${wallet.sol_price}`,
     `Open positions: ${positions.total_positions}/${config.risk.maxPositions}`,
     `Next deploy amount: ${deployAmount} SOL`,
+    `Min balance to open: ${computeMinOpenBalance(deployAmount)} SOL`,
     `Dry run: ${process.env.DRY_RUN === "true" ? "yes" : "no"}`,
     `HiveMind: ${hive}`,
   ].join("\n");
@@ -1038,7 +1049,7 @@ function formatConfigSnapshot() {
     "Config snapshot",
     "",
     `Strategy: ${config.strategy.strategy} | binsBelow: ${config.strategy.minBinsBelow}-${config.strategy.maxBinsBelow} | default ${config.strategy.defaultBinsBelow}`,
-    `Deploy: ${config.management.deployAmountSol} SOL | gasReserve: ${config.management.gasReserve} | maxPositions: ${config.risk.maxPositions}`,
+    `Deploy: ${config.management.deployAmountSol} SOL | gasReserve: ${config.management.gasReserve} | min open ${computeMinOpenBalance()} SOL | maxPositions: ${config.risk.maxPositions}`,
     `Stop loss: ${config.management.stopLossPct}% | take profit: ${config.management.takeProfitPct}%`,
     `Trailing: ${config.management.trailingTakeProfit ? "on" : "off"} | trigger ${config.management.trailingTriggerPct}% | drop ${config.management.trailingDropPct}%`,
     `OOR: ${config.management.outOfRangeWaitMinutes}m | cooldown ${config.management.oorCooldownTriggerCount}x / ${config.management.oorCooldownHours}h`,
