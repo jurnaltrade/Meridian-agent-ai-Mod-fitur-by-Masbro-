@@ -51,6 +51,7 @@ var startCmd = &cobra.Command{
 		}
 
 		orchestrator.StartCronJobs(cfg)
+		orchestrator.StartTelegramBot(cfg)
 
 		if cfg.Screening.UseDiscordSignals {
 			token := os.Getenv("DISCORD_USER_TOKEN")

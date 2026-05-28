@@ -9,11 +9,12 @@ import (
 	"meridian-go-rewrite/internal/agent"
 	"meridian-go-rewrite/internal/config"
 	"meridian-go-rewrite/internal/logger"
+	"meridian-go-rewrite/internal/telegram"
 )
 
 var (
-	managementBusy atomic.Bool
-	screeningBusy  atomic.Bool
+	managementBusy uint32
+	screeningBusy  uint32
 	cronTasks      []*cron.Cron
 	pnlPollStop    chan struct{}
 )
@@ -30,35 +31,35 @@ func StartCronJobs(cfg *config.Config) {
 
 	mgmtInterval := cfg.Schedule.ManagementIntervalMin
 	tasks.AddFunc(fmt.Sprintf("@every %dm", mgmtInterval), func() {
-		if managementBusy.Load() {
+		if atomic.LoadUint32(&managementBusy) == 1 {
 			return
 		}
-		managementBusy.Store(true)
+		atomic.StoreUint32(&managementBusy, 1)
 		ManagementLastRun = time.Now()
-		defer managementBusy.Store(false)
+		defer atomic.StoreUint32(&managementBusy, 0)
 		logger.Log("cron", "Starting management cycle")
 		runManagementCycle(cfg, false)
 	})
 
 	screenInterval := cfg.Schedule.ScreeningIntervalMin
 	tasks.AddFunc(fmt.Sprintf("@every %dm", screenInterval), func() {
-		if screeningBusy.Load() {
+		if atomic.LoadUint32(&screeningBusy) == 1 {
 			return
 		}
-		screeningBusy.Store(true)
+		atomic.StoreUint32(&screeningBusy, 1)
 		ScreeningLastRun = time.Now()
-		defer screeningBusy.Store(false)
+		defer atomic.StoreUint32(&screeningBusy, 0)
 		logger.Log("cron", "Starting screening cycle")
 		runScreeningCycle(cfg, false)
 	})
 
 	healthInterval := cfg.Schedule.HealthCheckIntervalMin
 	tasks.AddFunc(fmt.Sprintf("@every %dm", healthInterval), func() {
-		if managementBusy.Load() {
+		if atomic.LoadUint32(&managementBusy) == 1 {
 			return
 		}
-		managementBusy.Store(true)
-		defer managementBusy.Store(false)
+		atomic.StoreUint32(&managementBusy, 1)
+		defer atomic.StoreUint32(&managementBusy, 0)
 		logger.Log("cron", "Starting health check")
 		agent.AgentLoop("\nHEALTH CHECK\nSummarize the current portfolio health and total fees earned.\n", cfg.LLM.MaxSteps, nil, "MANAGER", "", 0, false, nil)
 	})
@@ -79,7 +80,7 @@ func StartCronJobs(cfg *config.Config) {
 		for {
 			select {
 			case <-ticker.C:
-				if managementBusy.Load() || screeningBusy.Load() {
+				if atomic.LoadUint32(&managementBusy) == 1 || atomic.LoadUint32(&screeningBusy) == 1 {
 					continue
 				}
 				pollPnL(cfg)
@@ -106,6 +107,24 @@ func StopCronJobs() {
 
 func runManagementCycle(cfg *config.Config, silent bool) {
 	logger.Log("cron", "Management cycle — position evaluation")
+	var callbacks *agent.ToolCallbacks
+	var lm *telegram.LiveMessage
+	var err error
+
+	if !silent && telegram.IsEnabled() {
+		lm, err = telegram.CreateLiveMessage("💼 <b>Management Cycle</b>", "Evaluating active liquidity positions...")
+		if err == nil && lm != nil {
+			callbacks = &agent.ToolCallbacks{
+				OnToolStart: func(name string, args map[string]any) {
+					lm.ToolStart(name)
+				},
+				OnToolFinish: func(name string, result any, success bool) {
+					lm.ToolFinish(name, result, success)
+				},
+			}
+		}
+	}
+
 	result, err := agent.AgentLoop(
 		`MANAGEMENT CYCLE
 You have open positions to evaluate. For each position:
@@ -115,17 +134,39 @@ You have open positions to evaluate. For each position:
 First call get_my_positions to check current state, then act accordingly.
 Be concise — one line per action.
 `,
-		cfg.LLM.MaxSteps, nil, "MANAGER", "", 0, false, nil)
+		cfg.LLM.MaxSteps, nil, "MANAGER", "", 0, false, callbacks)
 	if err != nil {
 		logger.Error("cron", err)
+		if lm != nil {
+			lm.Fail(err.Error())
+		}
 		return
 	}
 	logger.Log("cron", "Management cycle complete")
-	_ = result
+	if lm != nil {
+		lm.Finalize(result.Content)
+	}
 }
 
 func runScreeningCycle(cfg *config.Config, silent bool) {
 	logger.Log("cron", "Screening cycle — pool discovery")
+	var callbacks *agent.ToolCallbacks
+	var lm *telegram.LiveMessage
+	var err error
+
+	if !silent && telegram.IsEnabled() {
+		lm, err = telegram.CreateLiveMessage("🔍 <b>Screening Cycle</b>", "Discovering pools and evaluating candidate yield...")
+		if err == nil && lm != nil {
+			callbacks = &agent.ToolCallbacks{
+				OnToolStart: func(name string, args map[string]any) {
+					lm.ToolStart(name)
+				},
+				OnToolFinish: func(name string, result any, success bool) {
+					lm.ToolFinish(name, result, success)
+				},
+			}
+		}
+	}
 
 	goal := fmt.Sprintf(`SCREENING CYCLE
 Find and deploy into the best candidate.
@@ -141,13 +182,18 @@ If deploy succeeds, report 🚀 DEPLOYED with range and pool metrics.
 `,
 		cfg.Strategy.MinBinsBelow, cfg.Strategy.MaxBinsBelow-cfg.Strategy.MinBinsBelow)
 
-	result, err := agent.AgentLoop(goal, cfg.LLM.MaxSteps, nil, "SCREENER", "", 0, false, nil)
+	result, err := agent.AgentLoop(goal, cfg.LLM.MaxSteps, nil, "SCREENER", "", 0, false, callbacks)
 	if err != nil {
 		logger.Error("cron", err)
+		if lm != nil {
+			lm.Fail(err.Error())
+		}
 		return
 	}
 	logger.Log("cron", "Screening cycle complete")
-	_ = result
+	if lm != nil {
+		lm.Finalize(result.Content)
+	}
 }
 
 func runBriefing(cfg *config.Config) {
@@ -165,7 +211,9 @@ Format as clean HTML with <b> for section headers. Keep it under 4000 chars for 
 		return
 	}
 	logger.Log("briefing", "Briefing generated")
-	_ = result
+	if telegram.IsEnabled() {
+		telegram.SendHTML(result.Content)
+	}
 }
 
 func pollPnL(cfg *config.Config) {
@@ -190,9 +238,9 @@ func NextRunIn(lastRun time.Time, intervalMin int) string {
 }
 
 func ManagementBusy() bool {
-	return managementBusy.Load()
+	return atomic.LoadUint32(&managementBusy) == 1
 }
 
 func ScreeningBusy() bool {
-	return screeningBusy.Load()
+	return atomic.LoadUint32(&screeningBusy) == 1
 }

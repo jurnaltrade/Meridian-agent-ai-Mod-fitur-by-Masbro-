@@ -55,7 +55,11 @@ func AgentMeridianJSON(method, path string, body any) ([]byte, error) {
 		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("agent meridian HTTP %d: %s", resp.StatusCode, string(data[:min(len(data), 200)]))
+		limit := len(data)
+		if limit > 200 {
+			limit = 200
+		}
+		return nil, fmt.Errorf("agent meridian HTTP %d: %s", resp.StatusCode, string(data[:limit]))
 	}
 	return data, nil
 }

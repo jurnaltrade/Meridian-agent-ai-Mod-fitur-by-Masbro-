@@ -6,15 +6,24 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	openai "github.com/sashabaranov/go-openai"
 	"meridian-go-rewrite/internal/config"
 )
 
-var openaiClient *openai.Client
+var (
+	openaiClient *openai.Client
+	clientMu     sync.Mutex
+	lastAPIKey   string
+	lastBaseURL  string
+)
 
-func init() {
+func getClient() *openai.Client {
+	clientMu.Lock()
+	defer clientMu.Unlock()
+
 	baseURL := os.Getenv("LLM_BASE_URL")
 	if baseURL == "" {
 		baseURL = "https://openrouter.ai/api/v1"
@@ -23,9 +32,15 @@ func init() {
 	if apiKey == "" {
 		apiKey = os.Getenv("OPENROUTER_API_KEY")
 	}
-	cfg := openai.DefaultConfig(apiKey)
-	cfg.BaseURL = baseURL
-	openaiClient = openai.NewClientWithConfig(cfg)
+
+	if openaiClient == nil || apiKey != lastAPIKey || baseURL != lastBaseURL {
+		cfg := openai.DefaultConfig(apiKey)
+		cfg.BaseURL = baseURL
+		openaiClient = openai.NewClientWithConfig(cfg)
+		lastAPIKey = apiKey
+		lastBaseURL = baseURL
+	}
+	return openaiClient
 }
 
 type ToolCallbacks struct {
@@ -81,26 +96,32 @@ func AgentLoop(goal string, maxSteps int, sessionHistory []openai.ChatCompletion
 	firedOnce := make(map[string]bool)
 
 	for step := 0; step < maxSteps; step++ {
-		openaiTools := make([]openai.Tool, len(tools))
-		for i, t := range tools {
-			params, _ := json.Marshal(t.Function.Parameters)
-			openaiTools[i] = openai.Tool{
-				Type: openai.ToolTypeFunction,
-				Function: &openai.FunctionDefinition{
-					Name:        t.Function.Name,
-					Description: t.Function.Description,
-					Parameters:  params,
-				},
+		var openaiTools []openai.Tool
+		if len(tools) > 0 {
+			openaiTools = make([]openai.Tool, len(tools))
+			for i, t := range tools {
+				openaiTools[i] = openai.Tool{
+					Type: openai.ToolTypeFunction,
+					Function: &openai.FunctionDefinition{
+						Name:        t.Function.Name,
+						Description: t.Function.Description,
+						Parameters:  t.Function.Parameters,
+					},
+				}
 			}
 		}
 
-		resp, err := openaiClient.CreateChatCompletion(context.Background(), openai.ChatCompletionRequest{
+		req := openai.ChatCompletionRequest{
 			Model:       model,
 			Messages:    messages,
-			Tools:       openaiTools,
 			Temperature: float32(cfg.LLM.Temperature),
 			MaxTokens:   cfg.LLM.MaxTokens,
-		})
+		}
+		if len(openaiTools) > 0 {
+			req.Tools = openaiTools
+		}
+
+		resp, err := getClient().CreateChatCompletion(context.Background(), req)
 		if err != nil {
 			if strings.Contains(err.Error(), "429") {
 				time.Sleep(30 * time.Second)

@@ -3,7 +3,7 @@ package logger
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
+	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -19,7 +19,7 @@ func Log(category, message string) {
 	ts := time.Now().Format(time.RFC3339)
 	line := fmt.Sprintf("[%s] [%s] %s", ts, category, message)
 
-	slog.Info(message, "category", category)
+	log.Printf("INFO: %s category=%s", message, category)
 
 	dateStr := time.Now().Format("2006-01-02")
 	logFile := filepath.Join(logDir, "agent-"+dateStr+".log")

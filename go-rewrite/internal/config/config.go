@@ -1,14 +1,18 @@
 package config
 
 import (
+	"crypto/ed25519"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
+
+	"github.com/mr-tron/base58"
 )
 
 var (
-	activeConfig        atomic.Pointer[Config]
+	activeConfig        atomic.Value
 	ConfigDir           string
 	ConfigFile          string
 	MIN_SAFE_BINS_BELOW = 35
@@ -312,7 +316,7 @@ func LoadConfig(path string) (*Config, error) {
 
 func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("RPC_URL"); v != "" {
-		// stored in separate RPC field
+		cfg.RPCURL = v
 	}
 	if v := os.Getenv("WALLET_PRIVATE_KEY"); v != "" && cfg.Wallet.PrivateKey == "" {
 		cfg.Wallet.PrivateKey = v
@@ -357,13 +361,53 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("TELEGRAM_CHAT_ID"); v != "" && cfg.Telegram.ChatID == "" {
 		cfg.Telegram.ChatID = v
 	}
+	if v := os.Getenv("TELEGRAM_ALLOWED_USER_IDS"); v != "" && len(cfg.Telegram.AllowedUsers) == 0 {
+		parts := strings.Split(v, ",")
+		for _, part := range parts {
+			trimmed := strings.TrimSpace(part)
+			if trimmed != "" {
+				cfg.Telegram.AllowedUsers = append(cfg.Telegram.AllowedUsers, trimmed)
+			}
+		}
+	}
 	if v := os.Getenv("HELIUS_API_KEY"); v != "" {
 		os.Setenv("HELIUS_API_KEY", v)
 	}
+	if cfg.WalletAddr == "" && cfg.Wallet.PrivateKey != "" {
+		cfg.WalletAddr = deriveWalletAddress(cfg.Wallet.PrivateKey)
+	}
+}
+
+func deriveWalletAddress(privateKeyStr string) string {
+	if privateKeyStr == "" {
+		return ""
+	}
+	var seed []byte
+	// Try parsing as JSON array
+	if err := json.Unmarshal([]byte(privateKeyStr), &seed); err != nil {
+		// Try parsing as base58
+		if decoded, err := base58.Decode(privateKeyStr); err == nil {
+			seed = decoded
+		}
+	}
+	if len(seed) == 64 {
+		priv := ed25519.PrivateKey(seed)
+		pub := priv.Public().(ed25519.PublicKey)
+		return base58.Encode(pub)
+	} else if len(seed) == 32 {
+		priv := ed25519.NewKeyFromSeed(seed)
+		pub := priv.Public().(ed25519.PublicKey)
+		return base58.Encode(pub)
+	}
+	return ""
 }
 
 func Get() *Config {
-	return activeConfig.Load()
+	val := activeConfig.Load()
+	if val == nil {
+		return nil
+	}
+	return val.(*Config)
 }
 
 func (c *Config) RPCURLOrDefault() string {
@@ -437,7 +481,10 @@ func ComputeDeployAmount(walletSol float64, cfg *Config) float64 {
 }
 
 func HotReload() error {
-	cfg := activeConfig.Load()
+	cfg := Get()
+	if cfg == nil {
+		cfg = DefaultConfig()
+	}
 	newCfg, err := LoadConfig(ConfigFile)
 	if err != nil {
 		return err

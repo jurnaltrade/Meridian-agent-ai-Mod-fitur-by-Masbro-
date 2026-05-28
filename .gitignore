@@ -3,6 +3,7 @@ node_modules/
 
 # Environment & secrets
 .env
+go-rewrite/.env
 .env.*
 !.env.example
 .envrypt

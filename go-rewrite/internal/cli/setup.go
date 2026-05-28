@@ -15,7 +15,7 @@ var setupCmd = &cobra.Command{
 	Use:   "setup",
 	Short: "Interactive setup wizard",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Println(`
+		fmt.Print(`
 ╔═══════════════════════════════════════════════╗
 ║        Meridian — Setup Wizard                ║
 ║        Autonomous Meteora DLMM LP Agent       ║

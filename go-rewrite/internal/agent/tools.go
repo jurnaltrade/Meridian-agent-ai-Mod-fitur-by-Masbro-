@@ -14,6 +14,7 @@ import (
 	"meridian-go-rewrite/internal/solana/dlmm"
 	"meridian-go-rewrite/internal/solana/jupiter"
 	"meridian-go-rewrite/internal/solana/types"
+	"meridian-go-rewrite/internal/telegram"
 )
 
 var SCREENER_TOOLS = []string{
@@ -299,6 +300,10 @@ func execDeploy(args map[string]any, cfg *config.Config) any {
 		return map[string]any{"success": false, "error": err.Error()}
 	}
 
+	if result.Success {
+		telegram.NotifyDeploy(result.PoolName, input.AmountY, result.Position, "")
+	}
+
 	if registry.SignalTracker != nil && result.Pool != "" {
 		registry.SignalTracker.Stage(screeningToStaged(input, result))
 	}
@@ -313,6 +318,10 @@ func execClose(args map[string]any, cfg *config.Config) any {
 	result, err := dlmm.ClosePosition(addr, reason, skipSwap, cfg)
 	if err != nil {
 		return map[string]any{"success": false, "error": err.Error()}
+	}
+
+	if result.Success {
+		telegram.NotifyClose(result.PoolName, result.PnLUSD, result.PnLPct)
 	}
 
 	if registry.DecisionLog != nil && result.Success {

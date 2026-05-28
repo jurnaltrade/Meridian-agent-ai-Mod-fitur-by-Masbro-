@@ -64,12 +64,33 @@ func SendMessage(text string) error {
 	return err
 }
 
+func SendMessageToChat(targetChatID int64, text string) error {
+	if bot == nil {
+		return fmt.Errorf("telegram bot not initialized")
+	}
+	text = truncate(text, 4096)
+	msg := tgbotapi.NewMessage(targetChatID, text)
+	_, err := bot.Send(msg)
+	return err
+}
+
 func SendHTML(html string) error {
 	if bot == nil || chatID == 0 {
 		return fmt.Errorf("telegram not configured")
 	}
 	html = truncate(html, 4096)
 	msg := tgbotapi.NewMessage(chatID, html)
+	msg.ParseMode = "HTML"
+	_, err := bot.Send(msg)
+	return err
+}
+
+func SendHTMLToChat(targetChatID int64, html string) error {
+	if bot == nil {
+		return fmt.Errorf("telegram bot not initialized")
+	}
+	html = truncate(html, 4096)
+	msg := tgbotapi.NewMessage(targetChatID, html)
 	msg.ParseMode = "HTML"
 	_, err := bot.Send(msg)
 	return err
