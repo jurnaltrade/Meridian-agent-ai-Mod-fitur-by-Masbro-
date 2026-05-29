@@ -37,6 +37,7 @@ CONFIGURATION:
 - Solana: SOL=%s, USDC=%s
 
 CRITICAL TOOL RULES:
+- You MUST call the actual tool to perform any action. NEVER claim a deploy happened unless you actually called deploy_position and got a successful tool result back. If the tool fails or wasn't called, do not report success.
 - deploy_position already fetches the active bin internally. Do NOT call get_active_bin before deploy — it's wasteful and costs extra RPCs.
 - close_position handles fee claiming automatically — you do NOT need to call claim_fees before close. Doing so is wasteful and can cause failures.
 - When you see "exit alerts" or "CLOSE" in the management prompt, just call close_position — the rules have already been applied in code.
