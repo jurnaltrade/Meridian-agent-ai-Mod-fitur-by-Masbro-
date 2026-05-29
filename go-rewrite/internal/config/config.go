@@ -235,9 +235,9 @@ func DefaultConfig() *Config {
 			TakeProfitPct:                    5,
 			MinFeePerTvl24h:                  7,
 			MinAgeBeforeYieldCheck:           60,
-			MinSolToOpen:                     0.55,
-			DeployAmountSol:                  0.5,
-			GasReserve:                       0.2,
+			MinSolToOpen:                     0.5,
+			DeployAmountSol:                  0.4,
+			GasReserve:                       0.08,
 			PositionSizePct:                  0.35,
 			TrailingTakeProfit:               true,
 			TrailingTriggerPct:               3,
@@ -442,15 +442,15 @@ func (c *Config) DataPath(filename string) string {
 func ComputeMinOpenBalance(cfg *Config) float64 {
 	floor := cfg.Management.MinSolToOpen
 	if floor == 0 {
-		floor = 0.55
+		floor = 0.5
 	}
 	deploy := cfg.Management.DeployAmountSol
 	if deploy == 0 {
-		deploy = 0.5
+		deploy = 0.4
 	}
 	gas := cfg.Management.GasReserve
 	if gas == 0 {
-		gas = 0.2
+		gas = 0.08
 	}
 	result := floor
 	alt := deploy + gas

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -31,19 +32,19 @@ type DiscoveryPool struct {
 	Volume                              float64   `json:"volume"`
 	FeeActiveTvlRatio                   float64   `json:"fee_active_tvl_ratio"`
 	Volatility                          float64   `json:"volatility"`
-	BaseTokenHolders                    int       `json:"base_token_holders"`
-	ActivePositions                     int       `json:"active_positions"`
+	BaseTokenHolders                    float64   `json:"base_token_holders"`
+	ActivePositions                     float64   `json:"active_positions"`
 	ActivePositionsPct                  float64   `json:"active_positions_pct"`
-	OpenPositions                       int       `json:"open_positions"`
+	OpenPositions                       float64   `json:"open_positions"`
 	PoolPrice                           float64   `json:"pool_price"`
 	PoolPriceChangePct                  float64   `json:"pool_price_change_pct"`
-	PriceTrend                          string    `json:"price_trend"`
+	PriceTrend                          []float64 `json:"price_trend"`
 	MinPrice                            float64   `json:"min_price"`
 	MaxPrice                            float64   `json:"max_price"`
 	VolumeChangePct                     float64   `json:"volume_change_pct"`
 	FeeChangePct                        float64   `json:"fee_change_pct"`
-	SwapCount                           int       `json:"swap_count"`
-	UniqueTraders                       int       `json:"unique_traders"`
+	SwapCount                           float64   `json:"swap_count"`
+	UniqueTraders                       float64   `json:"unique_traders"`
 	BaseTokenHasCriticalWarnings        bool      `json:"base_token_has_critical_warnings"`
 	QuoteTokenHasCriticalWarnings       bool      `json:"quote_token_has_critical_warnings"`
 	BaseTokenHasHighSupplyConcentration bool      `json:"base_token_has_high_supply_concentration"`
@@ -58,7 +59,7 @@ type TokenSide struct {
 	Address      string  `json:"address"`
 	OrganicScore float64 `json:"organic_score"`
 	MarketCap    float64 `json:"market_cap"`
-	Warnings     int     `json:"warnings"`
+	Warnings     []any   `json:"warnings"`
 	Dev          string  `json:"dev"`
 	CreatedAt    float64 `json:"created_at"`
 }
@@ -71,11 +72,19 @@ type PoolMetadata struct {
 }
 
 func FetchDiscoveryPools(pageSize int, filters, timeframe, category string) (*DiscoveryResponse, error) {
-	url := fmt.Sprintf("%s/pools?page_size=%d&filter_by=%s&timeframe=%s&category=%s",
-		DiscoveryBase, pageSize, filters, timeframe, category)
+	u := fmt.Sprintf("%s/pools?page_size=%d", DiscoveryBase, pageSize)
+	if filters != "" && filters != "all" {
+		u += fmt.Sprintf("&filter_by=%s", url.QueryEscape(filters))
+	}
+	if timeframe != "" {
+		u += fmt.Sprintf("&timeframe=%s", url.QueryEscape(timeframe))
+	}
+	if category != "" {
+		u += fmt.Sprintf("&category=%s", url.QueryEscape(category))
+	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(url)
+	resp, err := client.Get(u)
 	if err != nil {
 		return nil, err
 	}
@@ -98,11 +107,11 @@ func FetchDiscoveryPools(pageSize int, filters, timeframe, category string) (*Di
 }
 
 func FetchPoolDetail(poolAddress, timeframe string) (*DiscoveryPool, error) {
-	url := fmt.Sprintf("%s/pools?page_size=1&filter_by=pool_address=%s&timeframe=%s",
-		DiscoveryBase, poolAddress, timeframe)
+	u := fmt.Sprintf("%s/pools?page_size=1&filter_by=%s&timeframe=%s",
+		DiscoveryBase, url.QueryEscape("pool_address="+poolAddress), url.QueryEscape(timeframe))
 
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(url)
+	resp, err := client.Get(u)
 	if err != nil {
 		return nil, err
 	}

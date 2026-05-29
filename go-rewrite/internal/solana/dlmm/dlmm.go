@@ -211,9 +211,11 @@ func SearchPools(query string, limit int) ([]map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	var res []map[string]any
+	var res struct {
+		Pools []map[string]any `json:"pools"`
+	}
 	if err := json.Unmarshal(out, &res); err != nil {
 		return nil, err
 	}
-	return res, nil
+	return res.Pools, nil
 }

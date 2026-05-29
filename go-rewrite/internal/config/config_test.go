@@ -60,11 +60,11 @@ func TestDefaultConfig_HasRequiredFields(t *testing.T) {
 	if cfg.Strategy.DefaultBinsBelow != 69 {
 		t.Errorf("DefaultBinsBelow = %d, want 69", cfg.Strategy.DefaultBinsBelow)
 	}
-	if cfg.Management.DeployAmountSol != 0.5 {
-		t.Errorf("DeployAmountSol = %f, want 0.5", cfg.Management.DeployAmountSol)
+	if cfg.Management.DeployAmountSol != 0.4 {
+		t.Errorf("DeployAmountSol = %f, want 0.4", cfg.Management.DeployAmountSol)
 	}
-	if cfg.Management.GasReserve != 0.2 {
-		t.Errorf("GasReserve = %f, want 0.2", cfg.Management.GasReserve)
+	if cfg.Management.GasReserve != 0.08 {
+		t.Errorf("GasReserve = %f, want 0.08", cfg.Management.GasReserve)
 	}
 	if cfg.Screening.MinOrganic != 60 {
 		t.Errorf("MinOrganic = %f, want 60", cfg.Screening.MinOrganic)
