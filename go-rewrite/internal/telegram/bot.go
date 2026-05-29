@@ -30,7 +30,7 @@ func StartPolling(cfg *config.Config, handler func(*tgbotapi.Message)) error {
 		chatID = parseInt64(cfg.Telegram.ChatID)
 	}
 
-	messageHandlers = append(messageHandlers, handler)
+	messageHandlers = []func(*tgbotapi.Message){handler}
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 30
@@ -263,18 +263,27 @@ func parseInt64(s string) int64 {
 	return result
 }
 
-func NotifyDeploy(pair string, amountSol float64, position, tx string) {
+func NotifyDeploy(pair string, amountSol float64, position, strategy string, binsBelow, binsAbove int, balanceSol float64) {
 	if bot == nil || chatID == 0 {
 		return
 	}
-	text := fmt.Sprintf("✅ <b>Deployed</b> %s\nAmount: %.2f SOL\nPosition: <code>%s</code>\nTx: <code>%s</code>",
-		pair, amountSol, truncateMID(position, 8), truncateMID(tx, 16))
-	msg := tgbotapi.NewMessage(chatID, text)
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("🚀 <b>New Position Deployed: %s</b>\n\n", pair))
+	sb.WriteString(fmt.Sprintf("• <b>Size:</b> <code>%.2f SOL</code>\n", amountSol))
+	sb.WriteString(fmt.Sprintf("• <b>Strategy:</b> <code>%s</code> (Bins: -%d to +%d)\n", strategy, binsBelow, binsAbove))
+	sb.WriteString(fmt.Sprintf("• <b>Remaining Wallet:</b> <code>%.4f SOL</code>\n\n", balanceSol))
+	
+	if position != "" {
+		sb.WriteString(fmt.Sprintf("🔗 <a href=\"https://solscan.io/account/%s\">View Position on Solscan</a>", position))
+	}
+	
+	msg := tgbotapi.NewMessage(chatID, sb.String())
 	msg.ParseMode = "HTML"
+	msg.DisableWebPagePreview = true
 	bot.Send(msg)
 }
 
-func NotifyClose(pair string, pnlUSD, pnlPct float64) {
+func NotifyClose(pair string, pnlUSD, pnlPct float64, reason string, feesUSD float64, balanceSol float64) {
 	if bot == nil || chatID == 0 {
 		return
 	}
@@ -282,9 +291,26 @@ func NotifyClose(pair string, pnlUSD, pnlPct float64) {
 	if pnlUSD >= 0 {
 		sign = "+"
 	}
-	text := fmt.Sprintf("🔒 <b>Closed</b> %s\nPnL: %s$%.2f (%s%.2f%%)",
-		pair, sign, pnlUSD, sign, pnlPct)
-	msg := tgbotapi.NewMessage(chatID, text)
+	
+	icon := "🔒"
+	if reason == "stop_loss" {
+		icon = "🚨"
+	} else if reason == "take_profit" {
+		icon = "🎯"
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("%s <b>Position Closed: %s</b>\n\n", icon, pair))
+	sb.WriteString(fmt.Sprintf("• <b>Exit PnL:</b> <code>%s$%.2f (%s%.2f%%)</code>\n", sign, pnlUSD, sign, pnlPct))
+	if feesUSD > 0 {
+		sb.WriteString(fmt.Sprintf("• <b>Fees Collected:</b> <code>$%.2f</code>\n", feesUSD))
+	}
+	if reason != "" {
+		sb.WriteString(fmt.Sprintf("• <b>Exit Reason:</b> <code>%s</code>\n", strings.ReplaceAll(reason, "_", " ")))
+	}
+	sb.WriteString(fmt.Sprintf("• <b>Remaining Wallet:</b> <code>%.4f SOL</code>\n", balanceSol))
+
+	msg := tgbotapi.NewMessage(chatID, sb.String())
 	msg.ParseMode = "HTML"
 	bot.Send(msg)
 }

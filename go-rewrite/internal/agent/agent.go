@@ -121,7 +121,9 @@ func AgentLoop(goal string, maxSteps int, sessionHistory []openai.ChatCompletion
 			req.Tools = openaiTools
 		}
 
-		resp, err := getClient().CreateChatCompletion(context.Background(), req)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		resp, err := getClient().CreateChatCompletion(ctx, req)
+		cancel()
 		if err != nil {
 			if strings.Contains(err.Error(), "429") {
 				time.Sleep(30 * time.Second)

@@ -301,7 +301,11 @@ func execDeploy(args map[string]any, cfg *config.Config) any {
 	}
 
 	if result.Success {
-		telegram.NotifyDeploy(result.PoolName, input.AmountY, result.Position, "")
+		var bal float64
+		if balances, err := solana.GetHeliusBalances(ToolWalletAddr, cfg.Tokens.SOL, cfg.Tokens.USDC); err == nil {
+			bal = balances.SOL
+		}
+		telegram.NotifyDeploy(result.PoolName, input.AmountY, result.Position, input.Strategy, input.BinsBelow, input.BinsAbove, bal)
 	}
 
 	if registry.SignalTracker != nil && result.Pool != "" {
@@ -321,7 +325,11 @@ func execClose(args map[string]any, cfg *config.Config) any {
 	}
 
 	if result.Success {
-		telegram.NotifyClose(result.PoolName, result.PnLUSD, result.PnLPct)
+		var bal float64
+		if balances, err := solana.GetHeliusBalances(ToolWalletAddr, cfg.Tokens.SOL, cfg.Tokens.USDC); err == nil {
+			bal = balances.SOL
+		}
+		telegram.NotifyClose(result.PoolName, result.PnLUSD, result.PnLPct, reason, 0.0, bal)
 	}
 
 	if registry.DecisionLog != nil && result.Success {

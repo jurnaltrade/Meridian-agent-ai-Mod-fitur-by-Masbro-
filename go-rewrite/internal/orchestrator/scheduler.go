@@ -9,6 +9,8 @@ import (
 	"meridian-go-rewrite/internal/agent"
 	"meridian-go-rewrite/internal/config"
 	"meridian-go-rewrite/internal/logger"
+	"meridian-go-rewrite/internal/solana"
+	"meridian-go-rewrite/internal/solana/dlmm"
 	"meridian-go-rewrite/internal/telegram"
 )
 
@@ -150,6 +152,39 @@ Be concise — one line per action.
 
 func runScreeningCycle(cfg *config.Config, silent bool) {
 	logger.Log("cron", "Screening cycle — pool discovery")
+
+	// Hard guards — don't even run the agent if preconditions aren't met
+	walletAddr := cfg.WalletAddress()
+	if walletAddr != "" {
+		// Position count check
+		client := dlmm.NewClient(walletAddr, cfg.RPCURLOrDefault())
+		positions, err := client.GetMyPositions(true)
+		if err == nil && len(positions.Positions) >= cfg.Risk.MaxPositions {
+			logger.Log("cron", fmt.Sprintf("Screening skipped — max positions reached (%d/%d)", len(positions.Positions), cfg.Risk.MaxPositions))
+			if !silent && telegram.IsEnabled() {
+				telegram.SendHTML(fmt.Sprintf("ℹ️ <b>Screening Cycle Skipped</b>\nMax positions reached (%d/%d)", len(positions.Positions), cfg.Risk.MaxPositions))
+			}
+			return
+		}
+
+		// Balance check
+		minRequired := config.ComputeMinOpenBalance(cfg)
+		if !cfg.DryRun {
+			balances, err := solana.GetHeliusBalances(walletAddr, cfg.Tokens.SOL, cfg.Tokens.USDC)
+			if err != nil {
+				logger.Error("cron", fmt.Errorf("screening balance check failed: %w", err))
+				return
+			}
+			if balances.SOL < minRequired {
+				logger.Log("cron", fmt.Sprintf("Screening skipped — insufficient SOL (%.3f < %.3f minimum)", balances.SOL, minRequired))
+				if !silent && telegram.IsEnabled() {
+					telegram.SendHTML(fmt.Sprintf("ℹ️ <b>Screening Cycle Skipped</b>\nInsufficient SOL (%.3f < %.3f minimum)", balances.SOL, minRequired))
+				}
+				return
+			}
+		}
+	}
+
 	var callbacks *agent.ToolCallbacks
 	var lm *telegram.LiveMessage
 	var err error

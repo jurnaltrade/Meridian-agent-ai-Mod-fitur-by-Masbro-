@@ -1,10 +1,13 @@
 package dlmm
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"meridian-go-rewrite/internal/config"
 )
@@ -41,7 +44,7 @@ func execNodeScript(funcName string, args map[string]any) ([]byte, error) {
 	script := fmt.Sprintf(`
 		import { %s } from '../tools/dlmm.js';
 		const args = JSON.parse(process.argv[1]);
-		%s(args).then(res => console.log(JSON.stringify(res))).catch(err => { console.error(err.message); process.exit(1); });
+		%s(args).then(res => { console.log(JSON.stringify(res)); process.exit(0); }).catch(err => { console.error(err.message); process.exit(1); });
 	`, funcName, funcName)
 
 	argsJSON, err := json.Marshal(args)
@@ -49,12 +52,28 @@ func execNodeScript(funcName string, args map[string]any) ([]byte, error) {
 		return nil, err
 	}
 
-	cmd := exec.Command("node", "--no-warnings", "--experimental-modules", "-e", script, string(argsJSON))
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "node", "--no-warnings", "--experimental-modules", "-e", script, string(argsJSON))
 	cmd.Dir = filepath.Join("..", "go-rewrite") // adjust if needed
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, fmt.Errorf("node command timed out after 45s: %w", err)
+		}
 		return nil, fmt.Errorf("node error: %s", string(out))
 	}
+
+	// Filter out console log prefix/lines that are not JSON
+	lines := strings.Split(string(out), "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "{\"") && strings.HasSuffix(trimmed, "}") {
+			return []byte(trimmed), nil
+		}
+	}
+
 	return out, nil
 }
 

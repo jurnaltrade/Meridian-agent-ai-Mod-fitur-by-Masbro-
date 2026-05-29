@@ -252,7 +252,7 @@ func DefaultConfig() *Config {
 		},
 		Schedule: ScheduleConfig{
 			ManagementIntervalMin:  10,
-			ScreeningIntervalMin:   30,
+			ScreeningIntervalMin:   4,
 			HealthCheckIntervalMin: 60,
 			PnlPollIntervalSec:     30,
 		},
