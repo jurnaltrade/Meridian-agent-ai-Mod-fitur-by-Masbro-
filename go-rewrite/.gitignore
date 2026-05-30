@@ -1,0 +1,19 @@
+# Environment & secrets (contains private API keys, etc.)
+.env
+.env.*
+!.env.example
+
+# Encrypted wallet (contains trading funds)
+wallet.enc
+wallet.enc.bak
+
+# Compiled Go binary folder
+bin/
+
+# Local JSON database files (if any are saved locally instead of ~/.meridian)
+*.json
+!go.mod
+!go.sum
+
+# Execution logs
+logs/

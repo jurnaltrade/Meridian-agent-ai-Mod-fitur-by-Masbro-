@@ -8,10 +8,10 @@ const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN || null;
 const BASE  = TOKEN ? `https://api.telegram.org/bot${TOKEN}` : null;
-const ALLOWED_USER_IDS = new Set(
+const ALLOWED_IDENTITIES = new Set(
   String(process.env.TELEGRAM_ALLOWED_USER_IDS || "")
     .split(",")
-    .map((id) => id.trim())
+    .map((id) => id.trim().replace(/^@/, "").toLowerCase())
     .filter(Boolean)
 );
 
@@ -48,9 +48,42 @@ function saveChatId(id) {
 
 loadChatId();
 
+function getSenderUserId(msg) {
+  return msg.from?.id != null ? String(msg.from.id) : null;
+}
+
+function getSenderUsername(msg) {
+  const username = msg.from?.username;
+  return username ? String(username).trim().replace(/^@/, "").toLowerCase() : null;
+}
+
+function isAllowedSender(msg) {
+  if (ALLOWED_IDENTITIES.size === 0) return true;
+  const senderUserId = getSenderUserId(msg);
+  const senderUsername = getSenderUsername(msg);
+  return (
+    (!!senderUserId && ALLOWED_IDENTITIES.has(senderUserId)) ||
+    (!!senderUsername && ALLOWED_IDENTITIES.has(senderUsername))
+  );
+}
+
+function maybeBindAuthorizedPrivateChat(msg) {
+  const text = String(msg?.text || "").trim().toLowerCase();
+  const chatType = msg?.chat?.type || "unknown";
+  const incomingChatId = String(msg?.chat?.id || "");
+  if (!incomingChatId || chatType !== "private") return false;
+  if (!["/bind", "/start", "/start bind"].includes(text)) return false;
+  if (!isAllowedSender(msg)) return false;
+  if (chatId === incomingChatId) return false;
+  chatId = incomingChatId;
+  saveChatId(chatId);
+  _warnedMissingChatId = false;
+  log("telegram", `Bound Telegram chatId ${chatId} from authorized private chat`);
+  return true;
+}
+
 function isAuthorizedIncomingMessage(msg) {
   const incomingChatId = String(msg.chat?.id || "");
-  const senderUserId = msg.from?.id != null ? String(msg.from.id) : null;
   const chatType = msg.chat?.type || "unknown";
 
   if (!chatId) {
@@ -63,7 +96,7 @@ function isAuthorizedIncomingMessage(msg) {
 
   if (incomingChatId !== chatId) return false;
 
-  if (chatType !== "private" && ALLOWED_USER_IDS.size === 0) {
+  if (chatType !== "private" && ALLOWED_IDENTITIES.size === 0) {
     if (!_warnedMissingAllowedUsers) {
       log("telegram_warn", "Ignoring group Telegram messages because TELEGRAM_ALLOWED_USER_IDS is not configured. Set explicit allowed user IDs for command/control.");
       _warnedMissingAllowedUsers = true;
@@ -71,8 +104,8 @@ function isAuthorizedIncomingMessage(msg) {
     return false;
   }
 
-  if (ALLOWED_USER_IDS.size > 0) {
-    if (!senderUserId || !ALLOWED_USER_IDS.has(senderUserId)) return false;
+  if (ALLOWED_IDENTITIES.size > 0) {
+    if (!isAllowedSender(msg)) return false;
   }
 
   return true;
@@ -375,6 +408,7 @@ async function poll(onMessage) {
         }
         const msg = update.message;
         if (!msg?.text) continue;
+        maybeBindAuthorizedPrivateChat(msg);
         if (!isAuthorizedIncomingMessage(msg)) continue;
         await onMessage(msg);
       }

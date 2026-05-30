@@ -20,7 +20,7 @@ import { addToBlacklist, removeFromBlacklist, listBlacklist } from "../token-bla
 import { blockDev, unblockDev, listBlockedDevs } from "../dev-blocklist.js";
 import { addSmartWallet, removeSmartWallet, listSmartWallets, checkSmartWalletsOnPool } from "../smart-wallets.js";
 import { getTokenInfo, getTokenHolders, getTokenNarrative } from "./token.js";
-import { config, reloadScreeningThresholds, MIN_SAFE_BINS_BELOW } from "../config.js";
+import { config, reloadScreeningThresholds, MIN_SAFE_BINS_BELOW, computeMinOpenBalance } from "../config.js";
 import { getRecentDecisions } from "../decision-log.js";
 import fs from "fs";
 import path from "path";
@@ -31,6 +31,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "../user-config.json");
 const POOL_DISCOVERY_BASE = "https://pool-discovery-api.datapi.meteora.ag";
 const MIN_VOLATILITY_TIMEFRAME = "30m";
+const WSOL_MINT = "So11111111111111111111111111111111111111112";
 const TIMEFRAME_MINUTES = {
   "5m": 5,
   "15m": 15,
@@ -72,6 +73,18 @@ function poolDetailVolatility(pool) {
   return numberOrNull(pool?.volatility);
 }
 
+function poolDetailBaseMint(pool) {
+  const candidates = [
+    pool?.token_x?.address,
+    pool?.token_x?.mint,
+    pool?.base_token_address,
+    pool?.base_mint,
+    pool?.base?.mint,
+    pool?.mint_x,
+  ];
+  return candidates.find((mint) => typeof mint === "string" && mint && mint !== WSOL_MINT) || null;
+}
+
 async function fetchFreshPoolDetail(poolAddress, timeframe = config.screening.timeframe || "5m") {
   const encodedTimeframe = encodeURIComponent(timeframe);
   const filter = encodeURIComponent(`pool_address=${poolAddress}`);
@@ -92,6 +105,42 @@ async function validateDeployPoolThresholds(args) {
       pass: false,
       reason: `Could not verify pool screening thresholds before deploy: ${error.message}`,
     };
+  }
+
+  const minTokenFeesSol = numberOrNull(config.screening.minTokenFeesSol);
+  if (minTokenFeesSol != null && minTokenFeesSol > 0) {
+    const baseMint = poolDetailBaseMint(detail);
+    if (!baseMint) {
+      return {
+        pass: false,
+        reason: "Could not verify base token before deploy.",
+      };
+    }
+
+    let tokenInfo;
+    try {
+      tokenInfo = await getTokenInfo({ query: baseMint });
+    } catch (error) {
+      return {
+        pass: false,
+        reason: `Could not verify token global fees before deploy: ${error.message}`,
+      };
+    }
+
+    const token = tokenInfo?.results?.find((entry) => entry.mint === baseMint) || tokenInfo?.results?.[0] || null;
+    const globalFeesSol = numberOrNull(token?.global_fees_sol);
+    if (globalFeesSol == null) {
+      return {
+        pass: false,
+        reason: `Could not verify token global fees before deploy for ${baseMint.slice(0, 8)}.`,
+      };
+    }
+    if (globalFeesSol < minTokenFeesSol) {
+      return {
+        pass: false,
+        reason: `Token global fees ${globalFeesSol} SOL below configured minTokenFeesSol ${minTokenFeesSol} SOL.`,
+      };
+    }
   }
 
   const tvl = poolDetailTvl(detail);
@@ -793,11 +842,11 @@ async function runSafetyChecks(name, args) {
       if (process.env.DRY_RUN !== "true") {
         const balance = await getWalletBalances();
         const gasReserve = config.management.gasReserve;
-        const minRequired = amountY + gasReserve;
+        const minRequired = computeMinOpenBalance(amountY);
         if (balance.sol < minRequired) {
           return {
             pass: false,
-            reason: `Insufficient SOL: have ${balance.sol} SOL, need ${minRequired} SOL (${amountY} deploy + ${gasReserve} gas reserve).`,
+            reason: `Insufficient SOL: have ${balance.sol} SOL, need ${minRequired} SOL (min wallet balance to open; ${amountY} deploy + ${gasReserve} gas reserve, floor ${config.management.minSolToOpen}).`,
           };
         }
       }

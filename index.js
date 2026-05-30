@@ -8,7 +8,7 @@ import { log } from "./logger.js";
 import { getMyPositions, closePosition, getActiveBin } from "./tools/dlmm.js";
 import { getWalletBalances } from "./tools/wallet.js";
 import { getTopCandidates } from "./tools/screening.js";
-import { config, reloadScreeningThresholds, computeDeployAmount } from "./config.js";
+import { config, reloadScreeningThresholds, computeDeployAmount, computeMinOpenBalance } from "./config.js";
 import { evolveThresholds, getPerformanceSummary } from "./lessons.js";
 import { executeTool, registerCronRestarter } from "./tools/executor.js";
 import {
@@ -40,10 +40,20 @@ const isMain = entrypointPath
   ? path.resolve(entrypointPath) === fileURLToPath(import.meta.url)
   : false;
 
+function logStartupConfigWarnings() {
+  if (config.screening.useDiscordSignals && !process.env.LPAGENT_API_KEY) {
+    log(
+      "startup_warn",
+      "Discord signals are enabled, but LPAGENT_API_KEY is not set. Top LPer monitoring and LPAgent-backed PnL checks will stay unavailable.",
+    );
+  }
+}
+
 if (isMain) {
   log("startup", "DLMM LP Agent starting...");
-  log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
+  log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : `LIVE (opens at >= ${computeMinOpenBalance()} SOL)`}`);
   log("startup", `Model: ${process.env.LLM_MODEL || "hermes-3-405b"}`);
+  logStartupConfigWarnings();
   ensureAgentId();
   bootstrapHiveMind().catch((error) => log("hivemind_warn", `Bootstrap failed: ${error.message}`));
   startHiveMindBackgroundSync();
@@ -113,6 +123,21 @@ function sanitizeUntrustedPromptText(text, maxLen = 500) {
 
 function shouldUsePnlRecheck() {
   return !config.api.lpAgentRelayEnabled;
+}
+
+async function notifyOperators(message) {
+  if (!telegramEnabled()) return;
+  try {
+    await sendMessage(message);
+  } catch (error) {
+    log("telegram_warn", `Operator notification failed: ${error.message}`);
+  }
+}
+
+if (isMain) {
+  notifyOperators(
+    `🟢 Meridian started\nMode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : `LIVE (opens at >= ${computeMinOpenBalance()} SOL)`}\nPID: ${process.pid}\nPM2: ${process.env.pm_id ?? "n/a"}`
+  ).catch(() => {});
 }
 
 function schedulePeakConfirmation(positionAddress) {
@@ -402,11 +427,11 @@ export async function runScreeningCycle({ silent = false } = {}) {
       _screeningBusy = false;
       return screenReport;
     }
-    const minRequired = config.management.deployAmountSol + config.management.gasReserve;
+    const minRequired = computeMinOpenBalance();
     const isDryRun = process.env.DRY_RUN === "true";
     if (!isDryRun && preBalance.sol < minRequired) {
-      log("cron", `Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} < ${minRequired} needed for deploy + gas)`);
-      screenReport = `Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} < ${minRequired} needed for deploy + gas).`;
+      log("cron", `Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} < ${minRequired} minimum wallet SOL to open)`);
+      screenReport = `Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} < ${minRequired} minimum wallet SOL to open).`;
       appendDecision({
         type: "skip",
         actor: "SCREENER",
@@ -626,7 +651,7 @@ STEPS:
    pass deploy_position.volatility = the candidate volatility value.
    For single-side SOL deploys, do not invent upside:
    set amount_y only, keep amount_x = 0, keep bins_above = 0, and let the upper bin stay at the active bin.
-4. Report in this exact format (no tables, no extra sections):
+4. If a pool qualified, you called deploy_position, AND the tool call reported SUCCESS, report in this exact format (no tables, no extra sections):
    🚀 DEPLOYED
 
    <pool name>
@@ -665,7 +690,7 @@ STEPS:
 
    WHY THIS WON
    <2-4 concise sentences on why this pool won, key risks, and why it still beat the alternatives>
-5. If no pool qualifies, report in this exact format instead:
+5. If no pool qualifies, or if a deploy_position tool call was made but it failed/was blocked/returned success: false, report in this exact format instead:
    ⛔ NO DEPLOY
 
    Cycle finished with no valid entry.
@@ -674,10 +699,10 @@ STEPS:
    <name or none>
 
    WHY SKIPPED
-   <2-4 concise sentences explaining why nothing was good enough>
+   <2-4 concise sentences explaining why nothing was deployed, including the exact error message if a deploy_position tool call failed/was blocked>
 
    REJECTED
-   <short flat list of top candidate names and why they were skipped>
+   <short flat list of top candidate names and why they were skipped or failed>
 IMPORTANT:
 - Never write "unknown" for OKX. Use real values, omit missing fields, or write exactly "OKX: unavailable".
 - Keep the whole report compact and highly scannable for Telegram.
@@ -736,7 +761,7 @@ export function startCronJobs() {
 
   const screenTask = cron.schedule(`*/${Math.max(1, config.schedule.screeningIntervalMin)} * * * *`, runScreeningCycle);
 
-  const healthTask = cron.schedule(`0 * * * *`, async () => {
+  const healthTask = cron.schedule(`*/${Math.max(1, config.schedule.healthCheckIntervalMin)} * * * *`, async () => {
     if (_managementBusy) return;
     _managementBusy = true;
     log("cron", "Starting health check");
@@ -763,8 +788,9 @@ Summarize the current portfolio health, total fees earned, and performance of al
     await maybeRunMissedBriefing();
   }, { timezone: 'UTC' });
 
-  // Lightweight 30s PnL poller — updates trailing TP state between management cycles, no LLM
+  // Lightweight PnL poller — updates trailing TP state between management cycles, no LLM
   let _pnlPollBusy = false;
+  const pnlPollIntervalMs = Math.max(30, Number(config.schedule.pnlPollIntervalSec || 30)) * 1000;
   const pnlPollInterval = setInterval(async () => {
     if (_managementBusy || _screeningBusy || _pnlPollBusy) return;
     if (getTrackedPositions(true).length === 0) return;
@@ -816,18 +842,22 @@ Summarize the current portfolio health, total fees earned, and performance of al
     } finally {
       _pnlPollBusy = false;
     }
-  }, 30_000);
+  }, pnlPollIntervalMs);
 
   _cronTasks = [mgmtTask, screenTask, healthTask, briefingTask, briefingWatchdog];
   // Store interval ref so stopCronJobs can clear it
   _cronTasks._pnlPollInterval = pnlPollInterval;
-  log("cron", `Cycles started — management every ${config.schedule.managementIntervalMin}m, screening every ${config.schedule.screeningIntervalMin}m`);
+  log(
+    "cron",
+    `Cycles started — management every ${config.schedule.managementIntervalMin}m, screening every ${config.schedule.screeningIntervalMin}m, health every ${config.schedule.healthCheckIntervalMin}m, PnL poll every ${Math.round(pnlPollIntervalMs / 1000)}s`
+  );
 }
 
 // ═══════════════════════════════════════════
 //  GRACEFUL SHUTDOWN
 // ═══════════════════════════════════════════
 let _shuttingDown = false;
+let _fatalExitTimer = null;
 
 function withTimeout(promise, ms) {
   let timer = null;
@@ -841,12 +871,20 @@ function withTimeout(promise, ms) {
   });
 }
 
-async function shutdown(signal) {
+async function shutdown(signal, { exitCode = 0 } = {}) {
   if (_shuttingDown) {
     log("shutdown", `Received ${signal} while shutdown is already in progress.`);
     return;
   }
   _shuttingDown = true;
+
+  if (exitCode !== 0) {
+    _fatalExitTimer = setTimeout(() => {
+      log("shutdown_error", `Forced exit after shutdown timeout (${signal})`);
+      process.exit(exitCode);
+    }, 15000);
+    if (typeof _fatalExitTimer.unref === "function") _fatalExitTimer.unref();
+  }
 
   log("shutdown", `Received ${signal}. Shutting down...`);
   stopPolling();
@@ -864,11 +902,29 @@ async function shutdown(signal) {
   } else {
     log("shutdown", "Open position snapshot skipped during shutdown timeout");
   }
-  process.exit(0);
+  if (_fatalExitTimer) clearTimeout(_fatalExitTimer);
+  process.exit(exitCode);
 }
 
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("unhandledRejection", (reason) => {
+  const error = reason instanceof Error ? reason : new Error(String(reason));
+  log("fatal_error", `Unhandled rejection: ${error.stack || error.message}`);
+  notifyOperators(`🔴 Meridian fatal error\nType: unhandledRejection\nMessage: ${error.message}`).catch(() => {});
+  shutdown("unhandledRejection", { exitCode: 1 }).catch((shutdownError) => {
+    log("shutdown_error", `Shutdown after unhandled rejection failed: ${shutdownError.message}`);
+    process.exit(1);
+  });
+});
+process.on("uncaughtException", (error) => {
+  log("fatal_error", `Uncaught exception: ${error.stack || error.message}`);
+  notifyOperators(`🔴 Meridian fatal error\nType: uncaughtException\nMessage: ${error.message}`).catch(() => {});
+  shutdown("uncaughtException", { exitCode: 1 }).catch((shutdownError) => {
+    log("shutdown_error", `Shutdown after uncaught exception failed: ${shutdownError.message}`);
+    process.exit(1);
+  });
+});
 
 // ═══════════════════════════════════════════
 //  FORMAT CANDIDATES TABLE
@@ -982,6 +1038,7 @@ function formatWalletStatus(wallet, positions) {
     `SOL price: $${wallet.sol_price}`,
     `Open positions: ${positions.total_positions}/${config.risk.maxPositions}`,
     `Next deploy amount: ${deployAmount} SOL`,
+    `Min balance to open: ${computeMinOpenBalance(deployAmount)} SOL`,
     `Dry run: ${process.env.DRY_RUN === "true" ? "yes" : "no"}`,
     `HiveMind: ${hive}`,
   ].join("\n");
@@ -992,7 +1049,7 @@ function formatConfigSnapshot() {
     "Config snapshot",
     "",
     `Strategy: ${config.strategy.strategy} | binsBelow: ${config.strategy.minBinsBelow}-${config.strategy.maxBinsBelow} | default ${config.strategy.defaultBinsBelow}`,
-    `Deploy: ${config.management.deployAmountSol} SOL | gasReserve: ${config.management.gasReserve} | maxPositions: ${config.risk.maxPositions}`,
+    `Deploy: ${config.management.deployAmountSol} SOL | gasReserve: ${config.management.gasReserve} | min open ${computeMinOpenBalance()} SOL | maxPositions: ${config.risk.maxPositions}`,
     `Stop loss: ${config.management.stopLossPct}% | take profit: ${config.management.takeProfitPct}%`,
     `Trailing: ${config.management.trailingTakeProfit ? "on" : "off"} | trigger ${config.management.trailingTriggerPct}% | drop ${config.management.trailingDropPct}%`,
     `OOR: ${config.management.outOfRangeWaitMinutes}m | cooldown ${config.management.oorCooldownTriggerCount}x / ${config.management.oorCooldownHours}h`,
@@ -1262,7 +1319,9 @@ function formatHelpText() {
     "Telegram commands",
     "",
     "/help — show commands",
+    "/bind — bind this private chat as operator chat",
     "/status — wallet + positions snapshot",
+    "/whoami — show Telegram sender/chat identity",
     "/wallet — wallet, deploy amount, HiveMind status",
     "/positions — list open positions",
     "/pool <n> — detailed info for one open position",
@@ -1417,6 +1476,23 @@ async function telegramHandler(msg) {
 
   if (text === "/help") {
     await sendMessage(formatHelpText()).catch(() => {});
+    return;
+  }
+
+  if (text === "/bind") {
+    const senderId = msg?.from?.id ?? "unknown";
+    const senderUsername = msg?.from?.username ? `@${msg.from.username}` : "(no username)";
+    const boundChatId = msg?.chat?.id ?? "unknown";
+    await sendMessage(`✅ Bound this chat.\nchat_id: ${boundChatId}\nfrom.id: ${senderId}\nfrom.username: ${senderUsername}`).catch(() => {});
+    return;
+  }
+
+  if (text === "/whoami") {
+    const senderId = msg?.from?.id ?? "unknown";
+    const senderUsername = msg?.from?.username ? `@${msg.from.username}` : "(no username)";
+    const boundChatId = msg?.chat?.id ?? "unknown";
+    const chatType = msg?.chat?.type ?? "unknown";
+    await sendMessage(`chat_id: ${boundChatId}\nchat_type: ${chatType}\nfrom.id: ${senderId}\nfrom.username: ${senderUsername}`).catch(() => {});
     return;
   }
 
