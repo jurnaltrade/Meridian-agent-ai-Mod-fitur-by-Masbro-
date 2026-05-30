@@ -349,6 +349,10 @@ func handleTelegramMessage(cfg *config.Config, msg *tgbotapi.Message) {
 					telegram.SendMessageToChat(msg.Chat.ID, "❌ Error closing position: "+err.Error())
 					return
 				}
+				if result.DryRun {
+					telegram.SendMessageToChat(msg.Chat.ID, fmt.Sprintf("⚠️ Dry Run: %s", result.Message))
+					return
+				}
 				if result.Success {
 					autoSwapStr := ""
 					if result.AutoSwapped {
@@ -380,6 +384,8 @@ func handleTelegramMessage(cfg *config.Config, msg *tgbotapi.Message) {
 					result, err := dlmm.ClosePosition(pos.Position, "Telegram closeall", false, cfg)
 					if err != nil {
 						results = append(results, fmt.Sprintf("• %s: failed (%v)", pos.Pair, err))
+					} else if result.DryRun {
+						results = append(results, fmt.Sprintf("• %s: dry run (%s)", pos.Pair, result.Message))
 					} else if result.Success {
 						results = append(results, fmt.Sprintf("• %s: closed, PnL $%.2f (%.2f%%)", pos.Pair, result.PnLUSD, result.PnLPct))
 					} else {

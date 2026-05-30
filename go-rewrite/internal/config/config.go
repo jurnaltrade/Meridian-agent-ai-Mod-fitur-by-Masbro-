@@ -352,8 +352,8 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("OPENROUTER_API_KEY"); v != "" && os.Getenv("LLM_API_KEY") == "" {
 		os.Setenv("LLM_API_KEY", v)
 	}
-	if v := os.Getenv("DRY_RUN"); v == "true" {
-		cfg.DryRun = true
+	if v := os.Getenv("DRY_RUN"); v != "" {
+		cfg.DryRun = (v == "true")
 	}
 	if v := os.Getenv("TELEGRAM_BOT_TOKEN"); v != "" && cfg.Telegram.BotToken == "" {
 		cfg.Telegram.BotToken = v

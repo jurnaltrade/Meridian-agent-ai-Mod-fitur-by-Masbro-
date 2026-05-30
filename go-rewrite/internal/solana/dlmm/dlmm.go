@@ -229,6 +229,8 @@ func DeployPosition(input DeployInput, cfg *config.Config) (*DeployResult, error
 type CloseResult struct {
 	Success      bool    `json:"success"`
 	Error        string  `json:"error,omitempty"`
+	DryRun       bool    `json:"dry_run,omitempty"`
+	Message      string  `json:"message,omitempty"`
 	Pool         string  `json:"pool,omitempty"`
 	PoolName     string  `json:"pool_name,omitempty"`
 	Position     string  `json:"position,omitempty"`
