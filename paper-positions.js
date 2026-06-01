@@ -259,8 +259,12 @@ export async function openPaperPosition({
     candles_in_range:  0,
     last_price:        normEntryPrice,
     last_candle_timestamp: nowSec,
+    // exit tracking (used by evaluatePaperExits)
+    peak_pnl_pct:      0,
+    oor_since_ts:      null,
     status:            "open",
     closed_at:         null,
+    close_reason:      null,
   };
 
   const state = load();
@@ -365,6 +369,65 @@ export function closePaperPosition(id) {
   return formatSummary(pos);
 }
 
+/**
+ * Apply exit rules (SL / TP / trailing / OOR) to all open paper positions and
+ * auto-close any that trigger. Mirrors the live deterministic exit logic so
+ * paper trades complete and accumulate as a validation sample.
+ * Called from the paper-sim cron right after tickPaperPositions().
+ *
+ * @param {Object} mgmtConfig - config.management
+ * @returns {Array} summaries of positions closed this pass
+ */
+export function evaluatePaperExits(mgmtConfig = {}) {
+  const state  = load();
+  const open   = Object.values(state.positions).filter((p) => p.status === "open");
+  const closed = [];
+
+  for (const pos of open) {
+    if (!pos.deposit_amount || pos.deposit_amount <= 0) continue;
+    const pnlPct = (pos.net_pnl / pos.deposit_amount) * 100;
+
+    // Track peak PnL for trailing TP
+    if (pnlPct > (pos.peak_pnl_pct ?? 0)) pos.peak_pnl_pct = pnlPct;
+
+    // OOR tracking using the sim clock (candle timestamps)
+    const inRange = pos.last_price >= pos.lower_price && pos.last_price <= pos.upper_price;
+    if (!inRange && pos.oor_since_ts == null) pos.oor_since_ts = pos.last_candle_timestamp;
+    else if (inRange) pos.oor_since_ts = null;
+
+    let reason = null;
+    if (mgmtConfig.stopLossPct != null && pnlPct <= mgmtConfig.stopLossPct) {
+      reason = `stop loss (${pnlPct.toFixed(1)}% <= ${mgmtConfig.stopLossPct}%)`;
+    } else if (mgmtConfig.takeProfitPct != null && pnlPct >= mgmtConfig.takeProfitPct) {
+      reason = `take profit (${pnlPct.toFixed(1)}% >= ${mgmtConfig.takeProfitPct}%)`;
+    } else if (
+      mgmtConfig.trailingTakeProfit &&
+      (pos.peak_pnl_pct ?? 0) >= (mgmtConfig.trailingTriggerPct ?? Infinity) &&
+      ((pos.peak_pnl_pct ?? 0) - pnlPct) >= (mgmtConfig.trailingDropPct ?? Infinity)
+    ) {
+      reason = `trailing TP (peak ${pos.peak_pnl_pct.toFixed(1)}% -> ${pnlPct.toFixed(1)}%)`;
+    } else if (
+      pos.oor_since_ts != null &&
+      mgmtConfig.outOfRangeWaitMinutes != null &&
+      (pos.last_candle_timestamp - pos.oor_since_ts) >= mgmtConfig.outOfRangeWaitMinutes * 60
+    ) {
+      const mins = Math.floor((pos.last_candle_timestamp - pos.oor_since_ts) / 60);
+      reason = `out of range ${mins}m (>= ${mgmtConfig.outOfRangeWaitMinutes}m)`;
+    }
+
+    if (reason) {
+      pos.status       = "closed";
+      pos.closed_at    = new Date().toISOString();
+      pos.close_reason = reason;
+      closed.push(formatSummary(pos));
+      log("paper_sim", `Auto-closed ${pos.id}: ${reason} | netPnL=$${pos.net_pnl} (${pnlPct.toFixed(1)}%)`);
+    }
+  }
+
+  save(state);
+  return closed;
+}
+
 // ─── Formatting ───────────────────────────────────────────────────────────────
 
 function formatSummary(pos) {
@@ -381,8 +444,10 @@ function formatSummary(pos) {
   return {
     id:            pos.id,
     pool:          pos.pool_name,
+    pool_address:  pos.pool_address,
     pair:          pos.pair,
     status:        pos.status,
+    close_reason:  pos.close_reason ?? null,
     strategy:      pos.strategy_type,
     deposit:       pos.deposit_amount,
     range:         { lower: pos.lower_price, upper: pos.upper_price, scale: pos.price_scale ?? 1 },

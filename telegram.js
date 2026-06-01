@@ -81,13 +81,18 @@ export function isEnabled() {
   return !!TOKEN;
 }
 
+const THREAD_ID = process.env.TELEGRAM_THREAD_ID
+  ? parseInt(process.env.TELEGRAM_THREAD_ID, 10)
+  : null;
+
 async function postTelegram(method, body) {
   if (!TOKEN || !chatId) return null;
+  const threadFields = THREAD_ID && method === "sendMessage" ? { message_thread_id: THREAD_ID } : {};
   try {
     const res = await fetch(`${BASE}/${method}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, ...body }),
+      body: JSON.stringify({ chat_id: chatId, ...threadFields, ...body }),
     });
     if (!res.ok) {
       const err = await res.text();

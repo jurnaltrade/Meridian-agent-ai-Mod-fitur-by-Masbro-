@@ -197,14 +197,18 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
 
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          response = await client.chat.completions.create({
+          const reqParams = {
             model: usedModel,
             messages,
             tools: getToolsForRole(agentType, goal),
             tool_choice: toolChoice,
             temperature: config.llm.temperature,
             max_tokens: maxOutputTokens ?? config.llm.maxTokens,
-          });
+          };
+          // OpenRouter-only provider routing (cheapest/cache-friendly provider).
+          const usingOpenRouter = !process.env.LLM_BASE_URL || /openrouter\.ai/.test(process.env.LLM_BASE_URL);
+          if (config.llm.provider && usingOpenRouter) reqParams.provider = config.llm.provider;
+          response = await client.chat.completions.create(reqParams);
         } catch (error) {
           if (providerMode === "system" && isSystemRoleError(error)) {
             providerMode = "user_embedded";

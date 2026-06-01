@@ -683,6 +683,11 @@ export async function deployPosition({
   }
 
   if (process.env.DRY_RUN === "true") {
+    // Compute the bin price range so the paper simulator can open a tracked position.
+    const dryMinBinId = activeBin.binId - activeBinsBelow;
+    const dryMaxBinId = isSingleSidedSol ? activeBin.binId : activeBin.binId + activeBinsAbove;
+    const dryLowerPrice = Number(getPriceOfBinByBinId(dryMinBinId, actualBinStep).toString());
+    const dryUpperPrice = Number(getPriceOfBinByBinId(dryMaxBinId, actualBinStep).toString());
     return {
       dry_run: true,
       would_deploy: {
@@ -694,6 +699,8 @@ export async function deployPosition({
         upside_pct: upside_pct ?? null,
         amount_x: finalAmountX,
         amount_y: finalAmountY,
+        lower_price: Math.min(dryLowerPrice, dryUpperPrice),
+        upper_price: Math.max(dryLowerPrice, dryUpperPrice),
         wide_range: totalBins > 69,
       },
       message: "DRY RUN — no transaction sent",
