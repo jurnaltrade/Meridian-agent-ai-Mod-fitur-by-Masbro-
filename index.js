@@ -26,7 +26,7 @@ import {
   createLiveMessage,
 } from "./telegram.js";
 import { generateBriefing } from "./briefing.js";
-import { tickPaperPositions, openPaperPosition, evaluatePaperExits, listPaperPositions } from "./paper-positions.js";
+import { tickPaperPositions, evaluatePaperExits } from "./paper-positions.js";
 import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions, setPositionInstruction, updatePnlAndCheckExits, queuePeakConfirmation, resolvePendingPeak, queueTrailingDropConfirmation, resolvePendingTrailingDrop } from "./state.js";
 import { getActiveStrategy } from "./strategy-library.js";
 import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memory.js";
@@ -727,33 +727,6 @@ IMPORTANT:
           if (name === "deploy_position") {
             deployAttempted = true;
             deploySucceeded = Boolean(success && result?.success !== false && !result?.error && !result?.blocked);
-            // BRIDGE: in dry-run, open a tracked paper position from the would_deploy
-            // result so paper trades accumulate (persisted in paper-positions.json).
-            const wd = result?.would_deploy;
-            if (result?.dry_run && wd?.lower_price > 0 && wd?.upper_price > 0) {
-              const solPrice = currentBalance.sol_price || 80;
-              const depositUsd = Number(((wd.amount_y ?? 0) * solPrice).toFixed(2));
-              // Mirror live constraints: respect maxPositions and one-position-per-pool
-              const openPaper = listPaperPositions().filter((p) => p.status === "open");
-              const atMax = openPaper.length >= config.risk.maxPositions;
-              const dupPool = openPaper.some((p) => p.pool_address === wd.pool_address);
-              if (atMax || dupPool) {
-                log("paper_sim", `Skip paper open for ${wd.pool_address?.slice(0, 8)}: ${atMax ? "max positions" : "duplicate pool"}`);
-              } else if (depositUsd > 0) {
-                try {
-                  const paper = await openPaperPosition({
-                    pool_address: wd.pool_address,
-                    deposit_amount: depositUsd,
-                    lower_price: wd.lower_price,
-                    upper_price: wd.upper_price,
-                    strategy_type: wd.strategy,
-                  });
-                  log("paper_sim", `Bridged dry-run deploy -> paper position ${paper?.id || "?"} ($${depositUsd})`);
-                } catch (e) {
-                  log("paper_sim_warn", `Failed to open paper position from dry-run deploy: ${e.message}`);
-                }
-              }
-            }
           }
           await liveMessage?.toolFinish(name, result, success);
         },
