@@ -786,17 +786,6 @@ async function runSafetyChecks(name, args) {
           reason: `bins_below ${args.bins_below ?? "missing"} is below minimum ${minBinsBelow}. Refusing 1-bin/tiny-range deploy.`,
         };
       }
-      if (
-        isSingleSidedSol &&
-        args.upside_pct == null &&
-        (!Number.isFinite(requestedBinsAbove) || !Number.isInteger(requestedBinsAbove) || requestedBinsAbove !== 0)
-      ) {
-        return {
-          pass: false,
-          reason: "Single-side SOL deploy must use bins_above=0.",
-        };
-      }
-
       // Check position count limit + duplicate pool guard — force fresh scan to avoid stale cache
       const positions = await getMyPositions({ force: true });
       if (positions.total_positions >= config.risk.maxPositions) {

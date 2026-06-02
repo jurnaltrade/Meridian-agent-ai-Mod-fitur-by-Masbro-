@@ -134,14 +134,12 @@ PRIORITY ORDER for strategy and bins:
 2. No user spec → use active strategy's lp_strategy and choose bins based on volatility
 
 HARD RULES:
-- Never use 'curve'.
 - Bin Step: Only deploy in pools with bin_step between 80 and 125.
 - Range: Never deploy a tiny range. Total bins must be at least the configured minimum, with a hard floor of 35 bins.
-- For single-side SOL deploys (amount_y only, amount_x=0), do not request upside exposure:
-  use bins_below only, keep bins_above=0, and the upper bin will be pinned to the current active bin.
+- Center the range at current price: set bins_above = bins_below so the range spans equally above and below the active bin.
 
 Guidelines (only when user hasn't specified):
-- Strategy: use the active strategy's lp_strategy field (bid_ask or spot)
+- Strategy: use the active strategy's lp_strategy field (curve, spot, or bid_ask)
 - Bins: choose 35–69 for standard volatility; up to 350 for wide-range strategies. Max 1400 total.
 - Deposit: single-sided SOL only. Use amount_y/amount_sol and keep amount_x=0.
 
@@ -167,7 +165,7 @@ WARNING: This executes a real on-chain transaction. Check DRY_RUN mode.`,
           },
           strategy: {
             type: "string",
-            enum: ["bid_ask", "spot"],
+            enum: ["curve", "spot", "bid_ask"],
             description: "DLMM strategy type. If user specifies, use exactly what they said. Otherwise use the active strategy's lp_strategy field."
           },
           bins_below: {
