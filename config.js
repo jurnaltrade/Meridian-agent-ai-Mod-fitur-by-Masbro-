@@ -183,6 +183,10 @@ export const config = {
     takeProfitPct:         u.takeProfitPct         ?? u.takeProfitFeePct ?? 5,
     minFeePerTvl24h:       u.minFeePerTvl24h       ?? 7,
     minAgeBeforeYieldCheck: u.minAgeBeforeYieldCheck ?? 60, // minutes before low yield can trigger close
+    // Stale "dead-money" cull (paper sim): close positions stuck in limbo —
+    // open a long time but barely in-range (not earning fees), freeing the slot.
+    staleCloseMinutes:     u.staleCloseMinutes     ?? 120, // min age before stale-close considered (0/null = off)
+    staleMaxInRangePct:    u.staleMaxInRangePct    ?? 25,  // if in-range below this %, treat as unproductive
     minSolToOpen:          u.minSolToOpen          ?? 0.55,
     deployAmountSol:       u.deployAmountSol       ?? 0.5,
     gasReserve:            u.gasReserve            ?? 0.2,

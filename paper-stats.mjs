@@ -48,6 +48,7 @@ const cat = (r) => {
   if (s.includes("stop loss")) return "SL";
   if (s.includes("take profit")) return "TP";
   if (s.includes("trailing")) return "TRAILING";
+  if (s.includes("stale")) return "STALE";
   if (s.includes("range")) return "OOR";
   return "OTHER";
 };

@@ -385,7 +385,9 @@ export function evaluatePaperExits(mgmtConfig = {}) {
 
   for (const pos of open) {
     if (!pos.deposit_amount || pos.deposit_amount <= 0) continue;
-    const pnlPct = (pos.net_pnl / pos.deposit_amount) * 100;
+    const pnlPct     = (pos.net_pnl / pos.deposit_amount) * 100;
+    const ageMinutes = Math.floor((Date.now() / 1000 - (pos.entry_timestamp || 0)) / 60);
+    const inRangePct = pos.candles_total > 0 ? (pos.candles_in_range / pos.candles_total) * 100 : 0;
 
     // Track peak PnL for trailing TP
     if (pnlPct > (pos.peak_pnl_pct ?? 0)) pos.peak_pnl_pct = pnlPct;
@@ -413,6 +415,12 @@ export function evaluatePaperExits(mgmtConfig = {}) {
     ) {
       const mins = Math.floor((pos.last_candle_timestamp - pos.oor_since_ts) / 60);
       reason = `out of range ${mins}m (>= ${mgmtConfig.outOfRangeWaitMinutes}m)`;
+    } else if (
+      mgmtConfig.staleCloseMinutes != null && mgmtConfig.staleCloseMinutes > 0 &&
+      ageMinutes >= mgmtConfig.staleCloseMinutes &&
+      inRangePct < (mgmtConfig.staleMaxInRangePct ?? 25)
+    ) {
+      reason = `stale dead-money (age ${ageMinutes}m, in-range ${inRangePct.toFixed(0)}%)`;
     }
 
     if (reason) {
