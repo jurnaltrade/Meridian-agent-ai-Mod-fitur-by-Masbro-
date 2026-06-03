@@ -132,8 +132,8 @@ POOL MEMORY: Past losses or problems → strong skip signal.
 DEPLOY RULES:
 - COMPOUNDING: Use the deploy amount from the goal EXACTLY. Do NOT default to a smaller number.
 - strategy = bid_ask — always use bid_ask for the active strategy.
-- APE-IN MODE: Use fixed bins — bins_below=49, bins_above=20, auto_swap=true. Deploy tool will auto-swap 50% SOL to token for dual-sided placement.
-- If volatility is extreme (>8), you may narrow to bins_below=35, bins_above=14 (total=49) for safety.
+- APE-IN MODE: Use fixed bins — bins_below=88, bins_above=20, auto_swap=true. Deploy tool will auto-swap 50% SOL to token for dual-sided placement. Deep range (88 bins = 88% below entry on 100bp pools) based on smart LP data showing 70-92% depth = highest win rate.
+- Target hold time: 1-6 hours. Do NOT close within first hour (let fees accumulate). Close at +3% TP or -5% SL. After 6 hours, evaluate if position is still generating fees.
 - Bin steps must be [${config.screening.minBinStep}-${config.screening.maxBinStep}].
 - Pick ONE pool only if it qualifies. Otherwise explain why none qualify.
 
