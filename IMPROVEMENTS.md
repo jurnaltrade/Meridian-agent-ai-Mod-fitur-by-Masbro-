@@ -2,12 +2,11 @@
 
 ## Portfolio SL Protection (belum diimplementasi)
 
-**Status:** Menunggu fork GitHub repo  
-**Repo:** https://github.com/yunus-0x/meridian  
+**Status:** Menunggu implementasi
 **Priority:** Medium
 
 ### Problem
-Saat ini Meridian hanya punya **per-position SL** (default -50%, user set -20%).  
+Saat ini Meridian hanya punya **per-position SL** (default -50%, user set -20%).
 Tidak ada **portfolio-level SL** yang memantau total wallet + semua posisi terbuka.
 
 ### User Need
@@ -32,15 +31,3 @@ Tidak ada **portfolio-level SL** yang memantau total wallet + semua posisi terbu
 - `index.js:933` — per-position SL check
 - `index.js:281` — `totalValue` calculation (reporting only)
 - `tools/executor.js:378` — `stopLossPct` config mapping
-
----
-
-## Dry Run Bug Fix (sudah di-fix 2026-06-02)
-
-**Bug:** `DRY_RUN` precedence salah, bot deploy 0.21 SOL beneran saat dry run  
-**Root cause:** 
-- `.env` → `DRY_RUN=false` (loaded duluan via dotenv)
-- `ecosystem.config.cjs` → `DRY_RUN: "false"` (string = truthy)
-- `config.js` → `||=` gak bisa override
-
-**Fix:** Ubah di 3 tempat: `.env`, `ecosystem.config.cjs`, `user-config.json`
