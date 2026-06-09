@@ -147,6 +147,11 @@ function isThinkingModeToolChoiceError(error) {
   return /thinking mode does not support/i.test(message) && /tool_choice/i.test(message);
 }
 
+function isTemperatureUnsupportedError(error) {
+  const message = String(error?.message || error?.error?.message || error || "");
+  return /temperature/i.test(message) && /(deprecated|unsupported|not supported)/i.test(message);
+}
+
 /**
  * Core ReAct agent loop.
  *
@@ -186,6 +191,8 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
   let noToolRetryCount = 0;
   // Stays true for the whole run once a thinking-mode provider rejects tool_choice
   let omitToolChoice = false;
+  // Stays true once the model rejects the temperature param (deprecated on newer Opus)
+  let omitTemperature = false;
 
   let emptyStreak = 0;
   for (let step = 0; step < maxSteps; step++) {
@@ -208,9 +215,9 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
             model: usedModel,
             messages,
             tools: getToolsForRole(agentType, goal),
-            temperature: config.llm.temperature,
             max_tokens: maxOutputTokens ?? config.llm.maxTokens,
           };
+          if (!omitTemperature && config.llm.temperature != null) reqParams.temperature = config.llm.temperature;
           if (!omitToolChoice) reqParams.tool_choice = toolChoice;
           response = await client.chat.completions.create(reqParams);
         } catch (error) {
@@ -230,6 +237,12 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
           if (!omitToolChoice && isThinkingModeToolChoiceError(error)) {
             omitToolChoice = true;
             log("agent", "Provider thinking mode does not support tool_choice — retrying without it");
+            attempt -= 1;
+            continue;
+          }
+          if (!omitTemperature && isTemperatureUnsupportedError(error)) {
+            omitTemperature = true;
+            log("agent", "Model rejected temperature param — retrying without it");
             attempt -= 1;
             continue;
           }
