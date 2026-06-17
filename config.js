@@ -179,6 +179,9 @@ export const config = {
     repeatDeployCooldownHours: u.repeatDeployCooldownHours ?? 12,
     repeatDeployCooldownScope: u.repeatDeployCooldownScope ?? "token", // pool | token | both
     repeatDeployCooldownMinFeeEarnedPct: u.repeatDeployCooldownMinFeeEarnedPct ?? u.repeatDeployCooldownMinFeeYieldPct ?? 0,
+    // Auto-evolve screening thresholds (minFeeActiveTvlRatio, minOrganic) from
+    // closed-position NET performance every 5 closes. Off by default — see lessons.js.
+    autoEvolveEnabled:     u.autoEvolveEnabled     ?? false,
     minVolumeToRebalance:  u.minVolumeToRebalance  ?? 1000,
     stopLossPct:           u.stopLossPct           ?? u.emergencyPriceDropPct ?? -50,
     takeProfitPct:         u.takeProfitPct         ?? u.takeProfitFeePct ?? 5,

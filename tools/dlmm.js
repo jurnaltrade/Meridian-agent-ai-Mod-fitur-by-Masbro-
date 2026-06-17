@@ -1835,6 +1835,17 @@ export async function closePosition({ position_address, reason }) {
             pnl_usd: pnlUsd,
             pnl_pct: pnlPct,
             base_mint: closeBaseMint,
+            // ── close-report extras (honest net breakdown) ──
+            fees_usd: feesUsd,
+            final_value_usd: finalValueUsd,
+            initial_value_usd: initialUsd,
+            minutes_held: minutesHeld,
+            minutes_oor: minutesOOR,
+            num_txs: claimTxHashes.length + closeTxHashes.length,
+            close_reason: reason || "agent decision",
+            meta_vol: tracked.volatility ?? null,
+            meta_bin_step: tracked.bin_step ?? null,
+            meta_fee_tvl: tracked.fee_tvl_ratio ?? null,
           };
         }
 
@@ -2120,6 +2131,17 @@ export async function closePosition({ position_address, reason }) {
         pnl_usd: pnlUsd,
         pnl_pct: pnlPct,
         base_mint: closeBaseMint,
+        // ── close-report extras (honest net breakdown) ──
+        fees_usd: feesUsd,
+        final_value_usd: finalValueUsd,
+        initial_value_usd: initialUsd,
+        minutes_held: minutesHeld,
+        minutes_oor: minutesOOR,
+        num_txs: claimTxHashes.length + closeTxHashes.length,
+        close_reason: reason || "agent decision",
+        meta_vol: tracked.volatility ?? null,
+        meta_bin_step: tracked.bin_step ?? null,
+        meta_fee_tvl: tracked.fee_tvl_ratio ?? null,
       };
     }
 

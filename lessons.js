@@ -143,10 +143,13 @@ export async function recordPerformance(perf) {
   };
 
   data.performance.push(entry);
+  entry.gross_pnl_usd = entry.pnl_usd; // Meteora gross, before realized trading costs
 
-  // Derive and store a lesson
+  // Derive and store a lesson. Tagged with lesson_id so it can be re-derived
+  // once realized gas+slip are known (see applyRealizedCosts).
   const lesson = derivLesson(entry);
   if (lesson) {
+    entry.lesson_id = lesson.id;
     data.lessons.push(lesson);
     log("lessons", `New lesson: ${lesson.rule}`);
   }
@@ -177,13 +180,20 @@ export async function recordPerformance(perf) {
     });
   }
 
-  // Evolve thresholds every 5 closed positions
+  // Evolve thresholds every 5 closed positions (opt-in via autoEvolveEnabled)
   if (data.performance.length % MIN_EVOLVE_POSITIONS === 0) {
     const { config, reloadScreeningThresholds } = await import("./config.js");
-    const result = evolveThresholds(data.performance, config);
-    if (result?.changes && Object.keys(result.changes).length > 0) {
-      reloadScreeningThresholds();
-      log("evolve", `Auto-evolved thresholds: ${JSON.stringify(result.changes)}`);
+    if (config.management?.autoEvolveEnabled) {
+      const result = evolveThresholds(data.performance, config);
+      if (result?.changes && Object.keys(result.changes).length > 0) {
+        reloadScreeningThresholds();
+        log("evolve", `Auto-evolved thresholds: ${JSON.stringify(result.changes)}`);
+        // Surface every auto-tune to the operator — never evolve silently
+        try {
+          const { notifyEvolve } = await import("./telegram.js");
+          await notifyEvolve(result);
+        } catch { /* notify best-effort */ }
+      }
     }
 
     // Darwinian signal weight recalculation
@@ -298,6 +308,57 @@ function derivLesson(perf) {
   };
 }
 
+/**
+ * Apply REALIZED trading costs (gas + swap slippage) to the most recent
+ * performance record for a position, AFTER the close swap has executed.
+ *
+ * The learning signal would otherwise use Meteora's optimistic gross PnL —
+ * which marks break-even-after-cost pools as "good". This subtracts the real
+ * costs and re-derives the lesson from honest net, so lessons + evolution
+ * stop reinforcing pools that only look profitable before fees.
+ *
+ * Idempotent: a record is only adjusted once.
+ *
+ * @param {Object} opts
+ * @param {string} opts.position   - Position address (matches recordPerformance)
+ * @param {number} opts.costsUsd   - Total realized costs (gas + slip) in USD
+ */
+export function applyRealizedCosts({ position, costsUsd } = {}) {
+  if (!position || !(costsUsd > 0)) return null;
+  const data = load();
+  for (let i = data.performance.length - 1; i >= 0; i--) {
+    const e = data.performance[i];
+    if (e.position !== position) continue;
+    if (e.costs_applied) return null; // already adjusted — stay idempotent
+
+    const gross = e.gross_pnl_usd != null ? e.gross_pnl_usd : e.pnl_usd;
+    const netUsd = gross - costsUsd;
+    e.gross_pnl_usd = Math.round(gross * 100) / 100;
+    e.costs_usd     = Math.round(costsUsd * 100) / 100;
+    e.pnl_usd       = Math.round(netUsd * 100) / 100;
+    e.pnl_pct       = e.initial_value_usd > 0
+      ? Math.round((netUsd / e.initial_value_usd) * 10000) / 100
+      : e.pnl_pct;
+    e.costs_applied = true;
+
+    // Drop the optimistic auto-lesson and re-derive from honest net
+    if (e.lesson_id) {
+      data.lessons = data.lessons.filter((l) => l.id !== e.lesson_id);
+      e.lesson_id = null;
+    }
+    const fresh = derivLesson(e);
+    if (fresh) {
+      e.lesson_id = fresh.id;
+      data.lessons.push(fresh);
+    }
+
+    save(data);
+    log("lessons", `Realized costs $${costsUsd.toFixed(2)} applied to ${e.pool_name || e.pool}: gross $${gross.toFixed(2)} → net $${e.pnl_usd.toFixed(2)} (${e.pnl_pct}%)`);
+    return { gross_pnl_usd: e.gross_pnl_usd, net_pnl_usd: e.pnl_usd, pnl_pct: e.pnl_pct };
+  }
+  return null;
+}
+
 // ─── Adaptive Threshold Evolution ──────────────────────────────
 
 /**
@@ -321,50 +382,14 @@ export function evolveThresholds(perfData, config) {
   const changes   = {};
   const rationale = {};
 
-  // ── 1. maxVolatility ─────────────────────────────────────────
-  // If losers tend to cluster at higher volatility → tighten the ceiling.
-  // If winners span higher volatility safely → we can loosen a bit.
-  {
-    const winnerVols = winners.map((p) => p.volatility).filter(isFiniteNum);
-    const loserVols  = losers.map((p) => p.volatility).filter(isFiniteNum);
-    const current    = config.screening.maxVolatility;
-
-    if (loserVols.length >= 2) {
-      // 25th percentile of loser volatilities — this is where things start going wrong
-      const loserP25 = percentile(loserVols, 25);
-      if (loserP25 < current) {
-        // Tighten: new ceiling = loserP25 + a small buffer
-        const target  = loserP25 * 1.15;
-        const newVal  = clamp(nudge(current, target, MAX_CHANGE_PER_STEP), 1.0, 20.0);
-        const rounded = Number(newVal.toFixed(1));
-        if (rounded < current) {
-          changes.maxVolatility = rounded;
-          rationale.maxVolatility = `Losers clustered at volatility ~${loserP25.toFixed(1)} — tightened from ${current} → ${rounded}`;
-        }
-      }
-    } else if (winnerVols.length >= 3 && losers.length === 0) {
-      // All winners so far — loosen conservatively so we don't miss good pools
-      const winnerP75 = percentile(winnerVols, 75);
-      if (winnerP75 > current * 1.1) {
-        const target  = winnerP75 * 1.1;
-        const newVal  = clamp(nudge(current, target, MAX_CHANGE_PER_STEP), 1.0, 20.0);
-        const rounded = Number(newVal.toFixed(1));
-        if (rounded > current) {
-          changes.maxVolatility = rounded;
-          rationale.maxVolatility = `All ${winners.length} positions profitable — loosened from ${current} → ${rounded}`;
-        }
-      }
-    }
-  }
-
-  // ── 2. minFeeTvlRatio ─────────────────────────────────────────
-  // Raise the floor if low-fee pools consistently underperform.
+  // ── 1. minFeeActiveTvlRatio ───────────────────────────────────
+  // Raise the fee/TVL floor if low-fee pools consistently underperform on NET.
   {
     const winnerFees = winners.map((p) => p.fee_tvl_ratio).filter(isFiniteNum);
     const loserFees  = losers.map((p) => p.fee_tvl_ratio).filter(isFiniteNum);
-    const current    = config.screening.minFeeTvlRatio;
+    const current    = config.screening.minFeeActiveTvlRatio;
 
-    if (winnerFees.length >= 2) {
+    if (isFiniteNum(current) && winnerFees.length >= 2) {
       // Minimum fee/TVL among winners — we know pools below this don't work for us
       const minWinnerFee = Math.min(...winnerFees);
       if (minWinnerFee > current * 1.2) {
@@ -372,15 +397,15 @@ export function evolveThresholds(perfData, config) {
         const newVal  = clamp(nudge(current, target, MAX_CHANGE_PER_STEP), 0.05, 10.0);
         const rounded = Number(newVal.toFixed(2));
         if (rounded > current) {
-          changes.minFeeTvlRatio = rounded;
-          rationale.minFeeTvlRatio = `Lowest winner fee_tvl=${minWinnerFee.toFixed(2)} — raised floor from ${current} → ${rounded}`;
+          changes.minFeeActiveTvlRatio = rounded;
+          rationale.minFeeActiveTvlRatio = `Lowest winner fee_tvl=${minWinnerFee.toFixed(2)} — raised floor from ${current} → ${rounded}`;
         }
       }
     }
 
-    if (loserFees.length >= 2) {
-      // If losers all had high fee/TVL, that's noise (pumps then crash) — don't raise min
-      // But if losers had low fee/TVL, raise min
+    if (isFiniteNum(current) && loserFees.length >= 2) {
+      // If losers all had high fee/TVL, that's noise (pumps then crash) — don't raise min.
+      // But if losers had low fee/TVL and winners higher, raise the floor.
       const maxLoserFee = Math.max(...loserFees);
       if (maxLoserFee < current * 1.5 && winnerFees.length > 0) {
         const minWinnerFee = Math.min(...winnerFees);
@@ -388,16 +413,16 @@ export function evolveThresholds(perfData, config) {
           const target  = maxLoserFee * 1.2;
           const newVal  = clamp(nudge(current, target, MAX_CHANGE_PER_STEP), 0.05, 10.0);
           const rounded = Number(newVal.toFixed(2));
-          if (rounded > current && !changes.minFeeTvlRatio) {
-            changes.minFeeTvlRatio = rounded;
-            rationale.minFeeTvlRatio = `Losers had fee_tvl<=${maxLoserFee.toFixed(2)}, winners higher — raised floor from ${current} → ${rounded}`;
+          if (rounded > current && !changes.minFeeActiveTvlRatio) {
+            changes.minFeeActiveTvlRatio = rounded;
+            rationale.minFeeActiveTvlRatio = `Losers had fee_tvl<=${maxLoserFee.toFixed(2)}, winners higher — raised floor from ${current} → ${rounded}`;
           }
         }
       }
     }
   }
 
-  // ── 3. minOrganic ─────────────────────────────────────────────
+  // ── 2. minOrganic ─────────────────────────────────────────────
   // Raise organic floor if low-organic tokens consistently failed.
   {
     const loserOrganics  = losers.map((p) => p.organic_score).filter(isFiniteNum);
@@ -437,9 +462,8 @@ export function evolveThresholds(perfData, config) {
 
   // Apply to live config object immediately
   const s = config.screening;
-  if (changes.maxVolatility    != null) s.maxVolatility    = changes.maxVolatility;
-  if (changes.minFeeTvlRatio   != null) s.minFeeTvlRatio   = changes.minFeeTvlRatio;
-  if (changes.minOrganic       != null) s.minOrganic       = changes.minOrganic;
+  if (changes.minFeeActiveTvlRatio != null) s.minFeeActiveTvlRatio = changes.minFeeActiveTvlRatio;
+  if (changes.minOrganic           != null) s.minOrganic           = changes.minOrganic;
 
   // Log a lesson summarizing the evolution
   const data = load();

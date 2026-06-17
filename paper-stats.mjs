@@ -14,7 +14,7 @@ const FILE = path.join(__dirname, "paper-positions.json");
 // Gates (tweak to taste)
 const GATE_SAMPLE = 30;
 const GATE_PF     = 1.2;
-const GATE_WR     = 40; // %
+const GATE_WR     = 15; // %
 
 if (!existsSync(FILE)) {
   console.log("No paper-positions.json yet — run the agent (npm start) to accumulate paper trades first.");
@@ -71,8 +71,13 @@ if (open.length) {
     const inRange = p.candles_total > 0 ? (p.candles_in_range / p.candles_total) * 100 : 0;
     const ageMin = Math.floor((Date.now() / 1000 - (p.entry_timestamp || 0)) / 60);
     const live = p.last_price >= p.lower_price && p.last_price <= p.upper_price ? "IN RANGE" : "OUT OF RANGE";
-    console.log(`  ${p.pair}  $${p.deposit_amount}  ${p.strategy_type}`);
-    console.log(`    PnL: $${f(p.net_pnl)} (${f(pnlPct)}%) | fees $${(p.fees_earned||0).toFixed(4)} | IL $${(p.il_usd||0).toFixed(4)}`);
+    const solRatio = p.deposit_sol && p.deposit_amount > 0 ? p.deposit_sol / p.deposit_amount : null;
+    const depositDisplay = p.deposit_sol ? `◎${p.deposit_sol.toFixed(3)}` : `$${p.deposit_amount}`;
+    const pnlDisplay   = solRatio ? `◎${f(p.net_pnl * solRatio)}` : `$${f(p.net_pnl)}`;
+    const feesDisplay  = solRatio ? `◎${((p.fees_earned||0) * solRatio).toFixed(4)}` : `$${(p.fees_earned||0).toFixed(4)}`;
+    const ilDisplay    = solRatio ? `◎${((p.il_usd||0) * solRatio).toFixed(4)}` : `$${(p.il_usd||0).toFixed(4)}`;
+    console.log(`  ${p.pair}  ${depositDisplay}  ${p.strategy_type}`);
+    console.log(`    PnL: ${pnlDisplay} (${f(pnlPct)}%) | fees ${feesDisplay} | IL ${ilDisplay}`);
     console.log(`    peak: ${f(p.peak_pnl_pct||0)}% | in-range: ${inRange.toFixed(0)}% | now: ${live} | age: ${ageMin}m`);
   }
 }

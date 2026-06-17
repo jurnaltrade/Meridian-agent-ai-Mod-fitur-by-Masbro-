@@ -95,7 +95,10 @@ async function fetchNewCandles(poolAddress, fromTimestamp) {
   if (!res.ok) throw new Error(`OHLCV fetch failed: ${res.status}`);
   const data = await res.json();
   // Filter out the candle at exactly fromTimestamp (already processed)
-  return (data.data ?? []).filter((c) => c.timestamp > fromTimestamp);
+  // Also exclude the currently-forming candle (its 5m window hasn't closed yet,
+  // so volume/prices are incomplete and would produce $0 fees permanently).
+  const nowSec = Math.floor(Date.now() / 1000);
+  return (data.data ?? []).filter((c) => c.timestamp > fromTimestamp && c.timestamp + 300 <= nowSec);
 }
 
 // ─── Liquidity distribution ───────────────────────────────────────────────────
@@ -190,6 +193,7 @@ function processCandle(candle, position) {
 export async function openPaperPosition({
   pool_address,
   deposit_amount,
+  deposit_sol = null,
   lower_price,
   upper_price,
   strategy_type = "spot",
@@ -233,6 +237,7 @@ export async function openPaperPosition({
     pool_name:    name || pool_address.slice(0, 8),
     pair:         `${tokenXSymbol}-${tokenYSymbol}`,
     deposit_amount,
+    deposit_sol:      deposit_sol ?? null,
     lower_price,
     upper_price,
     strategy_type,

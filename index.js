@@ -11,7 +11,7 @@ import { getTopCandidates } from "./tools/screening.js";
 import { formatGmgnCandidateForPrompt } from "./tools/gmgn.js";
 import { config, reloadScreeningThresholds, computeDeployAmount } from "./config.js";
 import { evolveThresholds, getPerformanceSummary } from "./lessons.js";
-import { executeTool, registerCronRestarter } from "./tools/executor.js";
+import { executeTool, registerCronRestarter, finalizeClose } from "./tools/executor.js";
 import {
   startPolling,
   stopPolling,
@@ -24,9 +24,12 @@ import {
   notifyOutOfRange,
   isEnabled as telegramEnabled,
   createLiveMessage,
+  updatePositionCard,
+  getPositionCard,
+  removePositionCard,
 } from "./telegram.js";
 import { generateBriefing } from "./briefing.js";
-import { tickPaperPositions, evaluatePaperExits } from "./paper-positions.js";
+import { tickPaperPositions, evaluatePaperExits, listPaperPositions, closePaperPosition } from "./paper-positions.js";
 import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions, setPositionInstruction, updatePnlAndCheckExits, queuePeakConfirmation, resolvePendingPeak, queueTrailingDropConfirmation, resolvePendingTrailingDrop } from "./state.js";
 import { getActiveStrategy } from "./strategy-library.js";
 import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memory.js";
@@ -1589,6 +1592,165 @@ async function drainTelegramQueue() {
   }
 }
 
+async function handlePositionCallback(msg) {
+  const data = msg.callbackData || msg.text || "";
+  const parts = data.split(":");
+  const action = parts[1];
+
+  if (action === "noop") {
+    await answerCallbackQuery(msg.callbackQueryId);
+    return;
+  }
+
+  // pool_address is always the last segment(s). For tp/sl: pos:tp:25:<pool>
+  const poolAddress = (action === "tp" || action === "sl")
+    ? parts.slice(3).join(":")
+    : parts.slice(2).join(":");
+
+  if (!poolAddress) {
+    await answerCallbackQuery(msg.callbackQueryId, "Missing position ID");
+    return;
+  }
+
+  const cardMeta = getPositionCard(poolAddress);
+
+  /** Find the live paper or real position for this pool */
+  async function findPosition() {
+    const papers = listPaperPositions().filter((p) => p.status === "open" && p.pool_address === poolAddress);
+    if (papers.length > 0) return { type: "paper", pos: papers[0] };
+    const live = await getMyPositions({ force: true, silent: true }).catch(() => null);
+    const real = live?.positions?.find((p) => p.pool === poolAddress);
+    if (real) return { type: "real", pos: real };
+    return null;
+  }
+
+  function paperCardData(p) {
+    const pnlPct = p.deposit > 0 ? (p.net_pnl / p.deposit) * 100 : 0;
+    const inRange = p.last_price >= p.range?.lower && p.last_price <= p.range?.upper;
+    return {
+      pair: cardMeta?.pair || p.pair,
+      position: cardMeta?.positionAddress || null,
+      deployAmount: cardMeta?.deployAmount ?? p.deposit_sol ?? p.deposit,
+      pnlPct: Number(pnlPct.toFixed(2)),
+      pnlUsd: Number(p.net_pnl.toFixed(3)),
+      inRange,
+      mode: "dry_run",
+      strategy: p.strategy,
+      tpPct: config.management?.takeProfitPct,
+      slPct: config.management?.stopLossPct,
+      trailingEnabled: config.management?.trailingTakeProfit,
+      status: p.status,
+    };
+  }
+
+  function realCardData(p) {
+    return {
+      pair: p.pair,
+      position: p.position,
+      deployAmount: cardMeta?.deployAmount ?? p.deposit_sol ?? null,
+      pnlPct: p.pnl_pct,
+      pnlUsd: p.pnl_usd,
+      inRange: p.in_range,
+      mode: "live",
+      strategy: p.strategy || config.strategy?.strategy,
+      tpPct: config.management?.takeProfitPct,
+      slPct: config.management?.stopLossPct,
+      trailingEnabled: config.management?.trailingTakeProfit,
+      status: "open",
+    };
+  }
+
+  // ── refresh ─────────────────────────────────────────────────────
+  if (action === "refresh") {
+    await answerCallbackQuery(msg.callbackQueryId, "Refreshing...");
+    const found = await findPosition();
+    if (!found) {
+      await updatePositionCard(poolAddress, {
+        pair: cardMeta?.pair || "?",
+        position: cardMeta?.positionAddress,
+        deployAmount: cardMeta?.deployAmount,
+        pnlPct: null, inRange: null, mode: "?", strategy: "?",
+        tpPct: null, slPct: null, trailingEnabled: false,
+        status: "closed",
+      });
+      return;
+    }
+    const cdata = found.type === "paper" ? paperCardData(found.pos) : realCardData(found.pos);
+    await updatePositionCard(poolAddress, cdata);
+    return;
+  }
+
+  // ── close ────────────────────────────────────────────────────────
+  if (action === "close") {
+    await answerCallbackQuery(msg.callbackQueryId, "Closing...");
+    const found = await findPosition();
+    if (!found) {
+      await sendMessage(`❌ Position not found for pool ${poolAddress.slice(0, 8)}…`).catch(() => {});
+      removePositionCard(poolAddress);
+      return;
+    }
+    if (found.type === "paper") {
+      try {
+        const closed = closePaperPosition(found.pos.id);
+        const pnlPct = closed.deposit > 0 ? ((closed.net_pnl / closed.deposit) * 100).toFixed(2) : "?";
+        await updatePositionCard(poolAddress, { ...paperCardData(closed), status: "closed" });
+        await sendMessage(`🔒 Closed paper position ${closed.pair}\nPnL: ${pnlPct}% ($${(closed.net_pnl ?? 0).toFixed(3)})`).catch(() => {});
+      } catch (e) {
+        await sendMessage(`❌ Close failed: ${e.message}`).catch(() => {});
+      }
+    } else {
+      const result = await closePosition({ position_address: found.pos.position }).catch((e) => ({ success: false, error: e.message }));
+      if (result.success) {
+        await updatePositionCard(poolAddress, { ...realCardData(found.pos), pnlPct: result.pnl_pct, pnlUsd: result.pnl_usd, status: "closed" });
+        // Auto-swap leftover token + send honest net-breakdown close report
+        await finalizeClose(result, { reason: "manual close button" }).catch(() => {});
+      } else {
+        await sendMessage(`❌ Close failed: ${result.error || JSON.stringify(result)}`).catch(() => {});
+      }
+    }
+    removePositionCard(poolAddress);
+    return;
+  }
+
+  // ── TP / SL adjust (absolute presets) ───────────────────────────
+  if (action === "tp" || action === "sl") {
+    const preset = Number(parts[2]); // tp: 3,5,10  |  sl: 10,20,30 (magnitude)
+    const newVal = action === "tp" ? preset : -preset;
+    const key = action === "tp" ? "takeProfitPct" : "stopLossPct";
+    const result = await executeTool("update_config", { changes: { [key]: newVal }, reason: "Position card TP/SL button" });
+    if (!result?.success) {
+      await answerCallbackQuery(msg.callbackQueryId, "Update failed");
+      return;
+    }
+    await answerCallbackQuery(msg.callbackQueryId, action === "tp" ? `TP → ${newVal}%` : `SL → ${newVal}%`);
+    const found = await findPosition();
+    if (found) {
+      const cdata = found.type === "paper" ? paperCardData(found.pos) : realCardData(found.pos);
+      await updatePositionCard(poolAddress, cdata);
+    }
+    return;
+  }
+
+  // ── trail toggle ─────────────────────────────────────────────────
+  if (action === "trail") {
+    const current = config.management?.trailingTakeProfit ?? false;
+    const result = await executeTool("update_config", { changes: { trailingTakeProfit: !current }, reason: "Position card trail toggle" });
+    if (!result?.success) {
+      await answerCallbackQuery(msg.callbackQueryId, "Update failed");
+      return;
+    }
+    await answerCallbackQuery(msg.callbackQueryId, `Trail: ${!current ? "ON" : "OFF"}`);
+    const found = await findPosition();
+    if (found) {
+      const cdata = found.type === "paper" ? paperCardData(found.pos) : realCardData(found.pos);
+      await updatePositionCard(poolAddress, cdata);
+    }
+    return;
+  }
+
+  await answerCallbackQuery(msg.callbackQueryId, "Unknown action");
+}
+
 async function telegramHandler(msg) {
   const text = msg?.text?.trim();
   if (!text) return;
@@ -1612,6 +1774,14 @@ async function telegramHandler(msg) {
       return;
     }
     await showSettingsMenu({ messageId: menuMsgId, page });
+    return;
+  }
+  if (msg?.isCallback && text.startsWith("pos:")) {
+    try {
+      await handlePositionCallback(msg);
+    } catch (e) {
+      await answerCallbackQuery(msg.callbackQueryId, e.message.slice(0, 200)).catch(() => {});
+    }
     return;
   }
   if (msg?.isCallback && text.startsWith("cfg:")) {
@@ -1718,9 +1888,11 @@ async function telegramHandler(msg) {
       await sendMessage(`Closing ${pos.pair}...`);
       const result = await closePosition({ position_address: pos.position });
       if (result.success) {
+        // Auto-swap leftover token + send honest net-breakdown close report
+        await finalizeClose(result, { reason: "manual /close" }).catch(() => {});
         const closeTxs = result.close_txs?.length ? result.close_txs : result.txs;
-        const claimNote = result.claim_txs?.length ? `\nClaim txs: ${result.claim_txs.join(", ")}` : "";
-        await sendMessage(`✅ Closed ${pos.pair}\nPnL: ${config.management.solMode ? "◎" : "$"}${result.pnl_usd ?? "?"} | close txs: ${closeTxs?.join(", ") || "n/a"}${claimNote}`);
+        const claimNote = result.claim_txs?.length ? ` · claim: ${result.claim_txs.join(", ")}` : "";
+        await sendMessage(`✅ ${pos.pair} closed · txs: ${closeTxs?.join(", ") || "n/a"}${claimNote}`);
       } else {
         await sendMessage(`❌ Close failed: ${JSON.stringify(result)}`);
       }
@@ -1737,6 +1909,7 @@ async function telegramHandler(msg) {
       for (const pos of positions) {
         try {
           const result = await closePosition({ position_address: pos.position });
+          if (result.success) await finalizeClose(result, { reason: "manual /closeall" }).catch(() => {});
           results.push(`${pos.pair}: ${result.success ? "closed" : `failed (${result.error || "unknown"})`}`);
         } catch (error) {
           results.push(`${pos.pair}: failed (${error.message})`);

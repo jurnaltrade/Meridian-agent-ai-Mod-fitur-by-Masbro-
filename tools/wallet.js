@@ -53,6 +53,31 @@ function getJupiterReferralParams() {
 }
 
 /**
+ * In DRY_RUN/paper mode the real wallet holds 0 SOL, which poisons deploy
+ * decisions — the agent reads "0 SOL, no capital" and skips every entry.
+ * Surface the configured paper balance instead so it evaluates entries as if
+ * funded. PAPER_WALLET_SOL is kept low enough that computeDeployAmount stays at
+ * the deployAmountSol floor (consistent sizing with prior paper samples).
+ * No effect when DRY_RUN is off.
+ */
+function applyPaperWalletSol(result) {
+  if (process.env.DRY_RUN !== "true") return result;
+  const paperSol = Number(process.env.PAPER_WALLET_SOL || 0);
+  if (!(paperSol > 0)) return result;
+  const price = result.sol_price > 0 ? result.sol_price : Number(process.env.PAPER_SOL_PRICE || 150);
+  const solUsd = Math.round(paperSol * price * 100) / 100;
+  const prevSolUsd = result.sol_usd || 0;
+  return {
+    ...result,
+    sol: paperSol,
+    sol_price: price,
+    sol_usd: solUsd,
+    total_usd: Math.round(((result.total_usd || 0) - prevSolUsd + solUsd) * 100) / 100,
+    paper_wallet: true,
+  };
+}
+
+/**
  * Get current wallet balances: SOL, USDC, and all SPL tokens using Helius Wallet API.
  * Returns USD-denominated values provided by Helius.
  */
@@ -61,13 +86,13 @@ export async function getWalletBalances() {
   try {
     walletAddress = getWallet().publicKey.toString();
   } catch {
-    return { wallet: null, sol: 0, sol_price: 0, sol_usd: 0, usdc: 0, tokens: [], total_usd: 0, error: "Wallet not configured" };
+    return applyPaperWalletSol({ wallet: null, sol: 0, sol_price: 0, sol_usd: 0, usdc: 0, tokens: [], total_usd: 0, error: "Wallet not configured" });
   }
 
   const HELIUS_KEY = process.env.HELIUS_API_KEY;
   if (!HELIUS_KEY) {
     log("wallet_error", "HELIUS_API_KEY not set in .env");
-    return { wallet: walletAddress, sol: 0, sol_price: 0, sol_usd: 0, usdc: 0, tokens: [], total_usd: 0, error: "Helius API key missing" };
+    return applyPaperWalletSol({ wallet: walletAddress, sol: 0, sol_price: 0, sol_usd: 0, usdc: 0, tokens: [], total_usd: 0, error: "Helius API key missing" });
   }
 
   try {
@@ -98,7 +123,7 @@ export async function getWalletBalances() {
       usd: b.usdValue ? Math.round(b.usdValue * 100) / 100 : null,
     }));
 
-    return {
+    return applyPaperWalletSol({
       wallet: walletAddress,
       sol: Math.round(solBalance * 1e6) / 1e6,
       sol_price: Math.round(solPrice * 100) / 100,
@@ -106,10 +131,10 @@ export async function getWalletBalances() {
       usdc: Math.round(usdcBalance * 100) / 100,
       tokens: enrichedTokens,
       total_usd: Math.round((data.totalUsdValue || 0) * 100) / 100,
-    };
+    });
   } catch (error) {
     log("wallet_error", error.message);
-    return {
+    return applyPaperWalletSol({
       wallet: walletAddress,
       sol: 0,
       sol_price: 0,
@@ -118,7 +143,7 @@ export async function getWalletBalances() {
       tokens: [],
       total_usd: 0,
       error: error.message,
-    };
+    });
   }
 }
 

@@ -120,7 +120,7 @@ RISK SIGNALS (guidelines — use judgment):
 - wash trading flag from OKX → treat as disqualifying even if other metrics look attractive
 - PVP symbol conflict (same exact symbol across multiple mints) → major negative. Avoid unless the setup is exceptional and clearly stronger than the competing symbol variants.
 - no narrative + no smart wallets → skip
-- If only one candidate is returned, do not deploy by default. Treat it as "maybe nothing is good enough"; deploy only if it still has a strong narrative, smart-wallet confirmation, and clean pool metrics.
+- If only one candidate is returned, hold a higher bar but DO NOT require smart-wallet confirmation — the smart-wallet list may be empty by design, so "0 smart wallets" is NOT a reason to skip. Deploy the sole candidate when it has a genuinely specific narrative AND clean pool metrics (organic score, holders, fee/active-TVL, no rug/wash flags, price not collapsing). Smart wallets, when present, are a strong bonus — never a prerequisite. Skip only if the narrative is generic hype OR the metrics are weak/deteriorating.
 
 NARRATIVE QUALITY (your main judgment call):
 - GOOD: specific origin — real event, viral moment, named entity, active community
@@ -128,6 +128,13 @@ NARRATIVE QUALITY (your main judgment call):
 - Smart wallets present → can override weak narrative, and are the only valid override for an OKX rugpull flag
 
 POOL MEMORY: Past losses or problems → strong skip signal.
+
+ENTRY TIMING (pool lifecycle — prefer pools on the way UP, not on the way down):
+- fee_change_pct > 0 AND volume_change_pct > 0 → fees are RISING (pre-peak). The fee/active-TVL you see is likely to grow. Strong plus.
+- fee_change_pct < 0 AND volume_change_pct < 0 → activity is COOLING (post-peak). The fee/active-TVL you see now will likely keep dropping while IL keeps accruing — this is exactly how a position ends OOR with thin fees. Treat as a minus.
+- price_trend "down" or a large negative price_change_pct on a cooling pool → avoid (late entry into a fade).
+- Among candidates with similar narrative/metrics, ALWAYS pick the one with rising fees/volume over the one that is fading.
+- This is a tiebreaker/preference, NOT a hard filter — do not skip an otherwise strong sole candidate purely for a slightly negative change.
 
 DEPLOY RULES:
 - COMPOUNDING: Use the deploy amount from the goal EXACTLY. Do NOT default to a smaller number.

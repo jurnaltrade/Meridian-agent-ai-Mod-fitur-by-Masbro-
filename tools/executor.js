@@ -11,7 +11,7 @@ import {
 } from "./dlmm.js";
 import { getWalletBalances, swapToken } from "./wallet.js";
 import { studyTopLPers } from "./study.js";
-import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons } from "../lessons.js";
+import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons, applyRealizedCosts } from "../lessons.js";
 import { setPositionInstruction } from "../state.js";
 
 import { getPoolMemory, addPoolNote } from "../pool-memory.js";
@@ -44,13 +44,88 @@ const TIMEFRAME_MINUTES = {
   "24h": 1440,
 };
 import { log, logAction } from "../logger.js";
-import { notifyDeploy, notifyClose, notifySwap } from "../telegram.js";
+import { sendPositionCard, notifyClose, notifySwap } from "../telegram.js";
 
 const SENSITIVE_CONFIG_KEYS = new Set([
   "gmgnApiKey",
   "hiveMindApiKey",
   "publicApiKey",
 ]);
+
+/**
+ * Post-close finalization shared by the agent loop (executor) AND manual
+ * /close, /closeall, and close-button handlers in index.js.
+ * - Auto-swaps the leftover base token back to SOL (unless skip_swap).
+ * - Computes the HONEST net: Meteora gross − gas (est) − REALIZED swap slippage.
+ * - Fires the rich net-breakdown close report to Telegram.
+ * `result` must be the object returned by closePosition() (enriched return).
+ * Returns the computed breakdown so callers can also use the numbers.
+ */
+export async function finalizeClose(result, { skip_swap = false, reason } = {}) {
+  let solPrice = 0;
+  let slipUsd = 0;
+  // Swap BEFORE notifying so the report shows realized slippage, not a model.
+  if (!skip_swap && result?.base_mint) {
+    try {
+      const balances = await getWalletBalances({});
+      solPrice = balances.sol_price || 0;
+      const token = balances.tokens?.find((t) => t.mint === result.base_mint);
+      if (token && token.usd >= 0.10) {
+        log("executor", `Auto-swapping ${token.symbol || result.base_mint.slice(0, 8)} ($${token.usd.toFixed(2)}) back to SOL`);
+        const swapResult = await swapToken({ input_mint: result.base_mint, output_mint: "SOL", amount: token.balance });
+        result.auto_swapped = true;
+        result.auto_swap_note = `Base token already auto-swapped back to SOL (${token.symbol || result.base_mint.slice(0, 8)} → SOL). Do NOT call swap_token again.`;
+        if (swapResult?.amount_out) {
+          result.sol_received = swapResult.amount_out;
+          if (solPrice > 0) {
+            const solOut = Number(swapResult.amount_out) / 1e9;
+            slipUsd = Math.max(0, token.usd - solOut * solPrice);
+          }
+        }
+      }
+    } catch (e) {
+      log("executor_warn", `Auto-swap after close failed: ${e.message}`);
+    }
+  }
+  // Need SOL price for gas→USD even when no swap happened (single-sided all-SOL exit).
+  if (solPrice <= 0) {
+    try { solPrice = (await getWalletBalances({})).sol_price || 0; } catch { /* best-effort */ }
+  }
+
+  // Gas: close+claim txs + ~1 deploy tx, each ~0.0025 SOL (live-measured per leg).
+  const GAS_PER_TX_SOL = 0.0025;
+  const gasUsd = solPrice > 0 ? ((result?.num_txs || 0) + 1) * GAS_PER_TX_SOL * solPrice : 0;
+  const grossUsd = result?.pnl_usd ?? 0;
+  const netUsd = grossUsd - gasUsd - slipUsd;
+  const inRangePct = result?.minutes_held > 0
+    ? Math.max(0, Math.min(100, Math.round(((result.minutes_held - (result.minutes_oor || 0)) / result.minutes_held) * 100)))
+    : null;
+
+  // Feed honest net into the learning system: subtract realized costs from the
+  // perf record recorded inside closePosition and re-derive its lesson from net.
+  if (result?.position) {
+    try { applyRealizedCosts({ position: result.position, costsUsd: gasUsd + slipUsd }); }
+    catch (e) { log("executor_warn", `applyRealizedCosts failed: ${e.message}`); }
+  }
+
+  await notifyClose({
+    pair: result?.pool_name || result?.position?.slice(0, 8) || "position",
+    grossUsd,
+    pnlPct: result?.pnl_pct ?? 0,
+    feesUsd: result?.fees_usd,
+    gasUsd,
+    slipUsd,
+    netUsd,
+    minutesHeld: result?.minutes_held,
+    inRangePct,
+    reason: result?.close_reason || reason,
+    vol: result?.meta_vol,
+    binStep: result?.meta_bin_step,
+    feeTvl: result?.meta_fee_tvl,
+  }).catch(() => {});
+
+  return { gasUsd, slipUsd, netUsd, grossUsd, inRangePct };
+}
 
 function redactConfigValue(key, value) {
   if (!SENSITIVE_CONFIG_KEYS.has(key)) return value;
@@ -630,10 +705,10 @@ export async function executeTool(name, args) {
       if (name === "swap_token" && result.tx) {
         notifySwap({ inputSymbol: args.input_mint?.slice(0, 8), outputSymbol: args.output_mint === "So11111111111111111111111111111111111111112" || args.output_mint === "SOL" ? "SOL" : args.output_mint?.slice(0, 8), amountIn: result.amount_in, amountOut: result.amount_out, tx: result.tx }).catch(() => {});
       } else if (name === "deploy_position") {
-        notifyDeploy({ pair: result.pool_name || args.pool_name || args.pool_address?.slice(0, 8), amountSol: args.amount_y ?? args.amount_sol ?? 0, position: result.position, tx: result.txs?.[0] ?? result.tx, priceRange: result.price_range, rangeCoverage: result.range_coverage, binStep: result.bin_step, baseFee: result.base_fee }).catch(() => {});
         // BRIDGE: in dry-run, open a tracked paper position so paper trades
         // accumulate (covers screening cron, `auto`, manual `1/2/3`, and chat deploys).
         const wd = result?.would_deploy;
+        let paperId = null;
         if (result?.dry_run && wd?.lower_price > 0 && wd?.upper_price > 0) {
           try {
             const openPaper = ((await list_paper_positions()) || []).filter((p) => p.status === "open");
@@ -644,47 +719,50 @@ export async function executeTool(name, args) {
               log("paper_sim", `Skip paper open for ${String(wd.pool_address).slice(0, 8)}: ${atMax ? "max positions" : dupPool ? "duplicate pool" : "duplicate base token"}`);
             } else {
               const bal = await getWalletBalances().catch(() => ({ sol_price: 80 }));
-              const depositUsd = Number(((wd.amount_y ?? 0) * (bal.sol_price || 80)).toFixed(2));
-              if (depositUsd > 0) {
+              const depositSol = Number((wd.amount_y ?? 0).toFixed(4));
+              const depositUsd = Number((depositSol * (bal.sol_price || 80)).toFixed(2));
+              if (depositSol > 0) {
                 const paper = await open_paper_position({
                   pool_address: wd.pool_address,
                   deposit_amount: depositUsd,
+                  deposit_sol: depositSol,
                   lower_price: wd.lower_price,
                   upper_price: wd.upper_price,
                   strategy_type: wd.strategy,
                   base_mint: wd.base_mint,
                 });
-                log("paper_sim", `Bridged dry-run deploy -> paper position ${paper?.id || "?"} ($${depositUsd})`);
+                paperId = paper?.id ?? null;
+                log("paper_sim", `Bridged dry-run deploy -> paper position ${paper?.id || "?"} (◎${depositSol})`);
               }
             }
           } catch (e) {
             log("paper_sim_warn", `Failed to open paper position from dry-run deploy: ${e.message}`);
           }
         }
+        // Send interactive position card (replaces plain notifyDeploy)
+        sendPositionCard({
+          pair: result.pool_name || args.pool_name || args.pool_address?.slice(0, 8),
+          pool: args.pool_address || wd?.pool_address,
+          position: result.position ?? null,
+          deployAmount: args.amount_y ?? args.amount_sol ?? 0,
+          pnlPct: 0,
+          inRange: true,
+          mode: result?.dry_run ? "dry_run" : "live",
+          strategy: args.strategy || config.strategy?.strategy,
+          tpPct: config.management?.takeProfitPct,
+          slPct: config.management?.stopLossPct,
+          trailingEnabled: config.management?.trailingTakeProfit,
+          paperId,
+        }).catch(() => {});
       } else if (name === "close_position") {
-        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0 }).catch(() => {});
         // Note low-yield closes in pool memory so screener avoids redeploying
         if (args.reason && args.reason.toLowerCase().includes("yield")) {
           const poolAddr = result.pool || args.pool_address;
           if (poolAddr) addPoolNote({ pool_address: poolAddr, note: `Closed: low yield (fee/TVL below threshold) at ${new Date().toISOString().slice(0,10)}` }).catch?.(() => {});
         }
-        // Auto-swap base token back to SOL unless user said to hold
-        if (!args.skip_swap && result.base_mint) {
-          try {
-            const balances = await getWalletBalances({});
-            const token = balances.tokens?.find(t => t.mint === result.base_mint);
-            if (token && token.usd >= 0.10) {
-              log("executor", `Auto-swapping ${token.symbol || result.base_mint.slice(0, 8)} ($${token.usd.toFixed(2)}) back to SOL`);
-              const swapResult = await swapToken({ input_mint: result.base_mint, output_mint: "SOL", amount: token.balance });
-              // Tell the model the swap already happened so it doesn't call swap_token again
-              result.auto_swapped = true;
-              result.auto_swap_note = `Base token already auto-swapped back to SOL (${token.symbol || result.base_mint.slice(0, 8)} → SOL). Do NOT call swap_token again.`;
-              if (swapResult?.amount_out) result.sol_received = swapResult.amount_out;
-            }
-          } catch (e) {
-            log("executor_warn", `Auto-swap after close failed: ${e.message}`);
-          }
-        }
+        // Auto-swap base token back to SOL + send honest net-breakdown close report.
+        // Shared with manual /close in index.js via finalizeClose().
+        await finalizeClose(result, { skip_swap: args.skip_swap, reason: args.reason });
       } else if (name === "claim_fees" && config.management.autoSwapAfterClaim && result.base_mint) {
         try {
           const balances = await getWalletBalances({});

@@ -61,6 +61,13 @@ function isAuthorizedIncomingMessage(msg) {
 
   if (incomingChatId !== chatId) return false;
 
+  // Topic filter: if THREAD_ID is configured, only accept messages from that topic.
+  // Messages with no thread_id (general/admin area) are always allowed.
+  if (THREAD_ID && chatType !== "private") {
+    const msgThreadId = msg.message_thread_id ?? null;
+    if (msgThreadId !== null && msgThreadId !== THREAD_ID) return false;
+  }
+
   if (chatType !== "private" && ALLOWED_USER_IDS.size === 0) {
     if (!_warnedMissingAllowedUsers) {
       log("telegram_warn", "Ignoring group Telegram messages because TELEGRAM_ALLOWED_USER_IDS is not configured. Set explicit allowed user IDs for command/control.");
@@ -347,6 +354,97 @@ export async function createLiveMessage(title, intro = "Starting...") {
 }
 
 
+// ─── Position Cards ──────────────────────────────────────────────
+// pool_address → { messageId, paperId, positionAddress, pair, deployAmount }
+const _positionCards = new Map();
+
+function buildPositionCard({
+  pair, pool, position, deployAmount, pnlPct, pnlUsd,
+  inRange, mode, strategy, tpPct, slPct, trailingEnabled, status = "open",
+}) {
+  const sign = (pnlPct ?? 0) >= 0 ? "+" : "";
+  const pnlStr = pnlPct != null ? `${sign}${Number(pnlPct).toFixed(2)}%` : "?%";
+  const pnlUsdStr = pnlUsd != null ? ` ($${sign}${Math.abs(Number(pnlUsd)).toFixed(2)})` : "";
+  const rangeStr = inRange == null ? "" : (inRange ? " · 🟢" : " · 🔴 OOR");
+  const modeLabel = (mode === "dry_run" || mode === true) ? "dry_run" : "live";
+  const statusLabel = status === "closed" ? "🔒 closed" : "🟢 open";
+  const posShort = position ? `<code>${position.slice(0, 8)}…</code>` : "";
+  const poolId = pool || "";
+
+  const lines = [
+    `🎯 <b>${pair || "Position"}</b>`,
+    `Status: ${statusLabel} · Mode: ${modeLabel} · Strategy: ${strategy || "?"}`,
+    `Size: ◎${deployAmount ?? "?"} · PnL: <b>${pnlStr}</b>${pnlUsdStr}${rangeStr}`,
+    `TP: ${tpPct ?? "?"}% · SL: ${slPct ?? "?"}% · Trail: ${trailingEnabled ? "✅ on" : "❌ off"}`,
+  ];
+  if (posShort) lines.push(`Pos: ${posShort}`);
+  const text = lines.join("\n");
+
+  const keyboard = status === "closed"
+    ? [[{ text: "✅ Position closed", callback_data: "pos:noop" }]]
+    : [
+        [
+          { text: "🔴 Close", callback_data: `pos:close:${poolId}` },
+          { text: "🔄 Refresh", callback_data: `pos:refresh:${poolId}` },
+        ],
+        [
+          { text: `TP 3%${tpPct === 3 ? " ✓" : ""}`,  callback_data: `pos:tp:3:${poolId}` },
+          { text: `TP 5%${tpPct === 5 ? " ✓" : ""}`,  callback_data: `pos:tp:5:${poolId}` },
+          { text: `TP 10%${tpPct === 10 ? " ✓" : ""}`, callback_data: `pos:tp:10:${poolId}` },
+        ],
+        [
+          { text: `SL -10%${slPct === -10 ? " ✓" : ""}`, callback_data: `pos:sl:10:${poolId}` },
+          { text: `SL -20%${slPct === -20 ? " ✓" : ""}`, callback_data: `pos:sl:20:${poolId}` },
+          { text: `SL -30%${slPct === -30 ? " ✓" : ""}`, callback_data: `pos:sl:30:${poolId}` },
+        ],
+        [{ text: `Trail: ${trailingEnabled ? "ON ✅" : "OFF ❌"}`, callback_data: `pos:trail:${poolId}` }],
+      ];
+
+  return { text, keyboard };
+}
+
+export async function sendPositionCard({
+  pair, pool, position, deployAmount, pnlPct, pnlUsd,
+  inRange, mode, strategy, tpPct, slPct, trailingEnabled, paperId,
+}) {
+  if (!TOKEN || !chatId) return null;
+  const { text, keyboard } = buildPositionCard({
+    pair, pool, position, deployAmount, pnlPct, pnlUsd,
+    inRange, mode, strategy, tpPct, slPct, trailingEnabled,
+  });
+  const sent = await postTelegram("sendMessage", {
+    text,
+    parse_mode: "HTML",
+    reply_markup: { inline_keyboard: keyboard },
+  });
+  const messageId = sent?.result?.message_id ?? null;
+  if (messageId && pool) {
+    _positionCards.set(pool, { messageId, paperId: paperId ?? null, positionAddress: position ?? null, pair, deployAmount });
+  }
+  return messageId;
+}
+
+export async function updatePositionCard(poolAddress, data) {
+  const card = _positionCards.get(poolAddress);
+  if (!card || !TOKEN || !chatId) return false;
+  const { text, keyboard } = buildPositionCard({ ...data, pool: poolAddress });
+  const res = await postTelegram("editMessageText", {
+    message_id: card.messageId,
+    text,
+    parse_mode: "HTML",
+    reply_markup: { inline_keyboard: keyboard },
+  });
+  return !!res?.ok;
+}
+
+export function getPositionCard(poolAddress) {
+  return _positionCards.get(poolAddress) ?? null;
+}
+
+export function removePositionCard(poolAddress) {
+  _positionCards.delete(poolAddress);
+}
+
 // ─── Long polling ────────────────────────────────────────────────
 async function poll(onMessage) {
   while (_polling) {
@@ -424,13 +522,58 @@ export async function notifyDeploy({ pair, amountSol, position, tx, priceRange, 
   );
 }
 
-export async function notifyClose({ pair, pnlUsd, pnlPct }) {
-  if (hasActiveLiveMessage()) return;
-  const sign = pnlUsd >= 0 ? "+" : "";
-  await sendHTML(
-    `🔒 <b>Closed</b> ${pair}\n` +
-    `PnL: ${sign}$${(pnlUsd ?? 0).toFixed(2)} (${sign}${(pnlPct ?? 0).toFixed(2)}%)`
-  );
+export async function notifyClose({
+  pair, grossUsd, pnlPct, feesUsd, gasUsd, slipUsd, netUsd,
+  minutesHeld, inRangePct, reason, vol, binStep, feeTvl,
+  // legacy fallback (older callers passed pnlUsd)
+  pnlUsd,
+}) {
+  // NOTE: intentionally NOT guarded by hasActiveLiveMessage() — the close report
+  // is important enough to always send, even mid agent-loop (when the bot closes
+  // autonomously a live streaming message is active and would otherwise eat it).
+
+  const gross = grossUsd ?? pnlUsd ?? 0;
+  const net = netUsd ?? gross;
+  const money = (n, withSign = false) => {
+    const v = Number(n) || 0;
+    const sign = withSign ? (v >= 0 ? "+" : "−") : (v < 0 ? "−" : "");
+    return `${sign}$${Math.abs(v).toFixed(2)}`;
+  };
+
+  const lines = [`🔒 <b>Closed</b> | ${pair}`, `──────────────`];
+  lines.push(`Gross : ${money(gross, true)} (${gross >= 0 ? "+" : ""}${(pnlPct ?? 0).toFixed(2)}%)`);
+  if (feesUsd != null) lines.push(`  └ fees earned: $${(Number(feesUsd) || 0).toFixed(2)}`);
+  if (gasUsd != null) lines.push(`− Gas (est) : −$${(Number(gasUsd) || 0).toFixed(2)}`);
+  if (slipUsd != null && Number(slipUsd) > 0) lines.push(`− Swap slip : −$${(Number(slipUsd) || 0).toFixed(2)}`);
+  lines.push(`──────────────`);
+  lines.push(`<b>NET (real) : ${money(net, true)}</b>`);
+
+  // Exit context line
+  const ctx = [];
+  if (reason) ctx.push(String(reason).replace(/_/g, " "));
+  if (minutesHeld != null) ctx.push(`${minutesHeld}m held`);
+  if (inRangePct != null) ctx.push(`${inRangePct}% in-range`);
+  if (ctx.length) lines.push(`Exit: ${ctx.join(" · ")}`);
+
+  // Pool meta line
+  const meta = [];
+  if (vol != null) meta.push(`vol ${Number(vol).toFixed(1)}`);
+  if (binStep != null) meta.push(`step ${binStep}`);
+  if (feeTvl != null) meta.push(`fee/TVL ${Number(feeTvl).toFixed(2)}%`);
+  if (meta.length) lines.push(`Pool: ${meta.join(" · ")}`);
+
+  await sendHTML(lines.join("\n"));
+}
+
+export async function notifyEvolve({ changes = {}, rationale = {} } = {}) {
+  // NOT guarded by hasActiveLiveMessage() — config self-mutation must always surface.
+  const lines = ["🧬 <b>Auto-evolved screening thresholds</b>"];
+  for (const [k, v] of Object.entries(changes)) {
+    lines.push(`• <b>${k}</b> → ${v}`);
+    if (rationale[k]) lines.push(`  <i>${rationale[k]}</i>`);
+  }
+  lines.push(`\n<i>Learned from honest net (after gas+slip). Toggle off: set autoEvolveEnabled=false</i>`);
+  await sendHTML(lines.join("\n"));
 }
 
 export async function notifySwap({ inputSymbol, outputSymbol, amountIn, amountOut, tx }) {
