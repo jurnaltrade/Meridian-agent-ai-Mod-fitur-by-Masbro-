@@ -170,6 +170,15 @@ export async function editMessage(text, messageId) {
   });
 }
 
+export async function editMessageHTML(text, messageId) {
+  if (!TOKEN || !chatId || !messageId) return null;
+  return postTelegram("editMessageText", {
+    message_id: messageId,
+    text: String(text).slice(0, 4096),
+    parse_mode: "HTML",
+  });
+}
+
 export async function editMessageWithButtons(text, messageId, inlineKeyboard) {
   if (!TOKEN || !chatId || !messageId) return null;
   return postTelegram("editMessageText", {
@@ -269,6 +278,40 @@ function summarizeToolResult(name, result) {
   }
 }
 
+export function escapeHtml(value) {
+  return String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// Pad/truncate on the raw (pre-escape) length so columns line up in the
+// monospace <pre> block — escaping itself can change character count.
+function padCell(value, width) {
+  let s = String(value ?? "");
+  if (s.length > width) s = `${s.slice(0, width - 1)}…`;
+  return escapeHtml(s) + " ".repeat(Math.max(0, width - s.length));
+}
+
+const TABLE_COLS = { name: 20, status: 2, result: 14 };
+
+function tableBorder(left, mid, right) {
+  return `${left}${"─".repeat(TABLE_COLS.name + 2)}${mid}${"─".repeat(TABLE_COLS.status + 2)}${mid}${"─".repeat(TABLE_COLS.result + 2)}${right}`;
+}
+
+function tableRow(name, status, result) {
+  return `│ ${padCell(name, TABLE_COLS.name)} │ ${padCell(status, TABLE_COLS.status)} │ ${padCell(result, TABLE_COLS.result)} │`;
+}
+
+function renderToolTable(rows) {
+  if (rows.length === 0) return "";
+  const lines = [
+    tableBorder("┌", "┬", "┐"),
+    tableRow("Tool", "St", "Result"),
+    tableBorder("├", "┼", "┤"),
+    ...rows.map((r) => tableRow(r.label, r.icon, r.summary)),
+    tableBorder("└", "┴", "┘"),
+  ];
+  return `<pre>${lines.join("\n")}</pre>`;
+}
+
 export async function createLiveMessage(title, intro = "Starting...") {
   if (!TOKEN || !chatId) return null;
   const typing = createTypingIndicator();
@@ -276,7 +319,7 @@ export async function createLiveMessage(title, intro = "Starting...") {
   const state = {
     title,
     intro,
-    toolLines: [],
+    toolRows: [], // { name, label, icon, summary }
     footer: "",
     messageId: null,
     flushTimer: null,
@@ -285,10 +328,14 @@ export async function createLiveMessage(title, intro = "Starting...") {
   };
 
   function render() {
-    const sections = [state.title];
-    if (state.intro) sections.push(state.intro);
-    if (state.toolLines.length > 0) sections.push(state.toolLines.join("\n"));
-    if (state.footer) sections.push(state.footer);
+    const sections = [
+      state.intro
+        ? `${escapeHtml(state.title)}\n${escapeHtml(state.intro)}`
+        : escapeHtml(state.title),
+    ];
+    const table = renderToolTable(state.toolRows);
+    if (table) sections.push(table);
+    if (state.footer) sections.push(escapeHtml(state.footer));
     return sections.join("\n\n").slice(0, 4096);
   }
 
@@ -297,11 +344,11 @@ export async function createLiveMessage(title, intro = "Starting...") {
     state.flushRequested = false;
     const text = render();
     if (!state.messageId) {
-      const sent = await sendMessage(text);
+      const sent = await sendHTML(text);
       state.messageId = sent?.result?.message_id ?? null;
       return;
     }
-    await editMessage(text, state.messageId);
+    await editMessageHTML(text, state.messageId);
   }
 
   function scheduleFlush(delay = 300) {
@@ -314,12 +361,12 @@ export async function createLiveMessage(title, intro = "Starting...") {
     }, delay);
   }
 
-  async function upsertToolLine(name, icon, suffix = "") {
+  async function upsertToolRow(name, icon, summary = "") {
     const label = toolLabel(name);
-    const line = `${icon} ${label}${suffix ? ` ${suffix}` : ""}`;
-    const idx = state.toolLines.findIndex((entry) => entry.includes(` ${label}`));
-    if (idx >= 0) state.toolLines[idx] = line;
-    else state.toolLines.push(line);
+    const idx = state.toolRows.findIndex((r) => r.name === name);
+    const row = { name, label, icon, summary };
+    if (idx >= 0) state.toolRows[idx] = row;
+    else state.toolRows.push(row);
     scheduleFlush();
   }
 
@@ -328,12 +375,11 @@ export async function createLiveMessage(title, intro = "Starting...") {
 
   return {
     async toolStart(name) {
-      await upsertToolLine(name, "ℹ️", "...");
+      await upsertToolRow(name, "⏳", "running...");
     },
     async toolFinish(name, result, success) {
       const icon = success ? "✅" : "❌";
-      const summary = summarizeToolResult(name, result);
-      await upsertToolLine(name, icon, summary ? `— ${summary}` : "");
+      await upsertToolRow(name, icon, summarizeToolResult(name, result));
     },
     async note(text) {
       state.intro = text;
@@ -409,6 +455,7 @@ async function poll(onMessage) {
 }
 
 const BOT_COMMANDS = [
+  { command: "start",      description: "Main menu with quick-access buttons" },
   { command: "help",       description: "Show commands" },
   { command: "status",     description: "Wallet + positions snapshot" },
   { command: "wallet",     description: "Wallet, deploy amount, HiveMind status" },

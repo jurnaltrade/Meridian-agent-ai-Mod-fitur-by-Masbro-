@@ -23,6 +23,7 @@ import {
   notifyOutOfRange,
   isEnabled as telegramEnabled,
   createLiveMessage,
+  escapeHtml,
 } from "./telegram.js";
 import { generateBriefing } from "./briefing.js";
 import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions, setPositionInstruction, updatePnlAndCheckExits, confirmPeak, registerExitSignal } from "./state.js";
@@ -968,46 +969,86 @@ function getLatestCandidatesMeta() {
   };
 }
 
+function formatCompact(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return "?";
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+  if (v >= 1_000) return `${(v / 1_000).toFixed(1)}k`;
+  return String(Math.round(v));
+}
+
+function formatCandidateCard(pool, i) {
+  const feeTvl = pool.fee_active_tvl_ratio ?? pool.fee_tvl_ratio;
+  const vol = pool.volume_window ?? pool.volume_24h;
+  const organic = pool.organic_score;
+  const holders = pool.holders ?? pool.base_token_holders;
+  const inRange = pool.active_pct != null ? ` · 🎯 ${pool.active_pct}% in-range` : "";
+  const holderStr = holders != null ? ` · 👥 ${formatCompact(holders)}` : "";
+  return [
+    `<b>${i + 1}. ${escapeHtml(pool.name || "unknown")}</b>`,
+    `💧 fee/TVL ${feeTvl ?? "?"}% · 📊 vol $${formatCompact(vol)} · 🌱 organic ${organic ?? "?"}${holderStr}${inRange}`,
+    `<code>${escapeHtml(pool.pool || "")}</code>`,
+  ].join("\n");
+}
+
 function describeLatestCandidates(limit = 5) {
   if (!_latestCandidates.length) return "No cached candidates yet. Run /screen first.";
-  const lines = _latestCandidates.slice(0, limit).map((pool, i) => {
-    const feeTvl = pool.fee_active_tvl_ratio ?? pool.fee_tvl_ratio ?? "?";
-    const vol = pool.volume_window ?? pool.volume_24h ?? "?";
-    const active = pool.active_pct ?? "?";
-    const organic = pool.organic_score ?? "?";
-    return `${i + 1}. ${pool.name} | fee/aTVL ${feeTvl}% | vol $${vol} | in-range ${active}% | organic ${organic}`;
-  });
+  const cards = _latestCandidates.slice(0, limit).map(formatCandidateCard);
   const age = _latestCandidatesAt ? new Date(_latestCandidatesAt).toLocaleString("en-US", { hour12: false }) : "unknown";
-  return `Latest candidates (${_latestCandidates.length}) — updated ${age}\n\n${lines.join("\n")}`;
+  return `<b>📋 Latest Candidates</b> (${_latestCandidates.length}) — ${age}\n\n${cards.join("\n\n")}`;
+}
+
+function formatAge(minutes) {
+  if (minutes == null) return "?";
+  const m = Math.max(0, Math.floor(minutes));
+  const days = Math.floor(m / 1440);
+  const hours = Math.floor((m % 1440) / 60);
+  const mins = m % 60;
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${mins}m`;
+  return `${mins}m`;
 }
 
 function formatWalletStatus(wallet, positions) {
   const deployAmount = computeDeployAmount(wallet.sol);
-  const hive = isHiveMindEnabled() ? "on" : "off";
+  const hive = isHiveMindEnabled() ? "🟢 on" : "⚪ off";
+  const dryRun = process.env.DRY_RUN === "true" ? "🧪 yes" : "🔴 no";
   return [
-    `Wallet: ${wallet.sol} SOL ($${wallet.sol_usd})`,
+    `<b>💰 Wallet</b>`,
+    `Balance: <code>${wallet.sol} SOL</code> ($${wallet.sol_usd})`,
     `SOL price: $${wallet.sol_price}`,
-    `Open positions: ${positions.total_positions}/${config.risk.maxPositions}`,
-    `Next deploy amount: ${deployAmount} SOL`,
-    `Dry run: ${process.env.DRY_RUN === "true" ? "yes" : "no"}`,
-    `HiveMind: ${hive}`,
+    ``,
+    `<b>📈 Positions</b>: ${positions.total_positions}/${config.risk.maxPositions} open`,
+    `Next deploy: <code>${deployAmount} SOL</code>`,
+    ``,
+    `Dry run: ${dryRun} | HiveMind: ${hive}`,
   ].join("\n");
 }
 
 function formatConfigSnapshot() {
   return [
-    "Config snapshot",
-    "",
-    `Strategy: ${config.strategy.strategy} | binsBelow: ${config.strategy.minBinsBelow}-${config.strategy.maxBinsBelow} | default ${config.strategy.defaultBinsBelow}`,
-    `Deploy: ${config.management.deployAmountSol} SOL | gasReserve: ${config.management.gasReserve} | maxPositions: ${config.risk.maxPositions}`,
-    `Stop loss: ${config.management.stopLossPct}% | take profit: ${config.management.takeProfitPct}%`,
-    `Trailing: ${config.management.trailingTakeProfit ? "on" : "off"} | trigger ${config.management.trailingTriggerPct}% | drop ${config.management.trailingDropPct}%`,
-    `OOR: ${config.management.outOfRangeWaitMinutes}m | cooldown ${config.management.oorCooldownTriggerCount}x / ${config.management.oorCooldownHours}h`,
-    `Repeat deploy cooldown: ${config.management.repeatDeployCooldownEnabled ? "on" : "off"} | ${config.management.repeatDeployCooldownTriggerCount}x / ${config.management.repeatDeployCooldownHours}h | min fee earned ${config.management.repeatDeployCooldownMinFeeEarnedPct}% | ${config.management.repeatDeployCooldownScope}`,
-    `Yield floor: ${config.management.minFeePerTvl24h}% | min age ${config.management.minAgeBeforeYieldCheck}m`,
-    `Screening: ${config.screening.category} / ${config.screening.timeframe} | TVL ${config.screening.minTvl}-${config.screening.maxTvl}`,
-    `Intervals: manage ${config.schedule.managementIntervalMin}m | screen ${config.schedule.screeningIntervalMin}m`,
-    `HiveMind: ${isHiveMindEnabled() ? "enabled" : "disabled"}${config.hiveMind.agentId ? ` | ${config.hiveMind.agentId}` : ""}`,
+    `<b>⚙️ Config Snapshot</b>`,
+    ``,
+    `<b>Strategy</b>`,
+    `${config.strategy.strategy} | bins ${config.strategy.minBinsBelow}-${config.strategy.maxBinsBelow} (default ${config.strategy.defaultBinsBelow})`,
+    ``,
+    `<b>Risk</b>`,
+    `Deploy <code>${config.management.deployAmountSol} SOL</code> | gas reserve ${config.management.gasReserve} | max positions ${config.risk.maxPositions}`,
+    ``,
+    `<b>Exits</b>`,
+    `Stop loss ${config.management.stopLossPct}% | take profit ${config.management.takeProfitPct}%`,
+    `Trailing: ${config.management.trailingTakeProfit ? "on" : "off"} (trigger ${config.management.trailingTriggerPct}%, drop ${config.management.trailingDropPct}%)`,
+    `OOR wait ${config.management.outOfRangeWaitMinutes}m | cooldown ${config.management.oorCooldownTriggerCount}x / ${config.management.oorCooldownHours}h`,
+    `Repeat-deploy cooldown: ${config.management.repeatDeployCooldownEnabled ? "on" : "off"} (${config.management.repeatDeployCooldownTriggerCount}x / ${config.management.repeatDeployCooldownHours}h, ${config.management.repeatDeployCooldownScope})`,
+    `Yield floor ${config.management.minFeePerTvl24h}% after ${config.management.minAgeBeforeYieldCheck}m`,
+    ``,
+    `<b>Screening</b>`,
+    `${config.screening.category} / ${config.screening.timeframe} | TVL ${config.screening.minTvl}-${config.screening.maxTvl}`,
+    ``,
+    `<b>Schedule</b>`,
+    `manage every ${config.schedule.managementIntervalMin}m | screen every ${config.schedule.screeningIntervalMin}m`,
+    ``,
+    `HiveMind: ${isHiveMindEnabled() ? "enabled" : "disabled"}${config.hiveMind.agentId ? ` (<code>${escapeHtml(config.hiveMind.agentId)}</code>)` : ""}`,
   ].join("\n");
 }
 
@@ -1025,6 +1066,7 @@ function parseConfigValue(raw) {
 
 function settingValue(key) {
   const values = {
+    dryRun: process.env.DRY_RUN === "true",
     solMode: config.management.solMode,
     lpAgentRelayEnabled: config.api.lpAgentRelayEnabled,
     chartIndicatorsEnabled: config.indicators.enabled,
@@ -1081,6 +1123,46 @@ function stepButtons(key, label, step, { digits = 2 } = {}) {
     settingButton(`+ ${label}`, `cfg:step:${key}:${step}`),
   ];
 }
+
+function renderMainMenu() {
+  const text = [
+    "🤖 Meridian — Quick Menu",
+    "",
+    "Tap a button below, or use /help for the full command list.",
+  ].join("\n");
+  const keyboard = [
+    [settingButton("📊 Status", "act:status"), settingButton("📈 Positions", "act:positions")],
+    [settingButton("🔍 Screen", "act:screen"), settingButton("📋 Candidates", "act:candidates")],
+    [settingButton("📰 Briefing", "act:briefing"), settingButton("🧠 HiveMind", "act:hive")],
+    [settingButton("⚙️ Settings", "act:settings"), settingButton("ℹ️ Help", "act:help")],
+    [settingButton("⏸ Pause", "act:pause"), settingButton("▶️ Resume", "act:resume")],
+  ];
+  return { text, keyboard };
+}
+
+async function showMainMenu({ messageId = null } = {}) {
+  const menu = renderMainMenu();
+  if (messageId) {
+    await editMessageWithButtons(menu.text, messageId, menu.keyboard);
+  } else {
+    await sendMessageWithButtons(menu.text, menu.keyboard);
+  }
+}
+
+// Quick-menu buttons map to the equivalent slash command and fall through
+// to the same handler logic below — one code path for typed and tapped commands.
+const MAIN_MENU_ACTIONS = {
+  "act:status": "/status",
+  "act:positions": "/positions",
+  "act:screen": "/screen",
+  "act:candidates": "/candidates",
+  "act:briefing": "/briefing",
+  "act:hive": "/hive",
+  "act:settings": "/settings",
+  "act:help": "/help",
+  "act:pause": "/pause",
+  "act:resume": "/resume",
+};
 
 function renderSettingsMenu(page = "main") {
   const title = page === "main" ? "Settings menu" : `Settings: ${page}`;
@@ -1161,6 +1243,7 @@ function renderSettingsMenu(page = "main") {
     ];
   } else {
     rows = [
+      [toggleButton("dryRun", "Dry run")],
       [toggleButton("solMode", "SOL mode"), toggleButton("lpAgentRelayEnabled", "LPAgent relay")],
       [toggleButton("chartIndicatorsEnabled", "Chart indicators"), toggleButton("trailingTakeProfit", "Trailing TP")],
       [
@@ -1265,30 +1348,45 @@ async function applySettingsMenuCallback(msg) {
 }
 
 function formatHelpText() {
-  return [
-    "Telegram commands",
-    "",
-    "/help — show commands",
-    "/status — wallet + positions snapshot",
-    "/wallet — wallet, deploy amount, HiveMind status",
-    "/positions — list open positions",
-    "/pool <n> — detailed info for one open position",
-    "/close <n> — close one position by index",
-    "/closeall — close all open positions",
-    "/set <n> <note> — set note/instruction on position",
-    "/config — show important runtime config",
-    "/settings — button menu for common config",
-    "/setcfg <key> <value> — update persisted config",
-    "/screen — refresh deterministic candidate list",
-    "/candidates — show latest cached candidates",
-    "/deploy <n> — deploy candidate by cached index",
-    "/briefing — morning briefing",
-    "/hive — HiveMind sync status",
-    "/hive pull — manual HiveMind pull now",
-    "/pause — stop cron cycles",
-    "/resume — start cron cycles again",
-    "/stop — shut down agent",
-  ].join("\n");
+  const sections = [
+    ["🚀 Quick start", [
+      ["/start", "main menu with buttons"],
+      ["/help", "show this list"],
+    ]],
+    ["📊 Status", [
+      ["/status", "wallet + positions snapshot"],
+      ["/wallet", "wallet, deploy amount, HiveMind status"],
+      ["/positions", "list open positions"],
+      ["/pool &lt;n&gt;", "detailed info for one position"],
+    ]],
+    ["💼 Position control", [
+      ["/close &lt;n&gt;", "close one position by index"],
+      ["/closeall", "close all open positions"],
+      ["/set &lt;n&gt; &lt;note&gt;", "set note/instruction on position"],
+    ]],
+    ["⚙️ Config", [
+      ["/config", "show important runtime config"],
+      ["/settings", "button menu for common config"],
+      ["/setcfg &lt;key&gt; &lt;value&gt;", "update persisted config"],
+    ]],
+    ["🔍 Screening", [
+      ["/screen", "refresh deterministic candidate list"],
+      ["/candidates", "show latest cached candidates"],
+      ["/deploy &lt;n&gt;", "deploy candidate by cached index"],
+    ]],
+    ["🧠 Other", [
+      ["/briefing", "morning briefing"],
+      ["/hive", "HiveMind sync status"],
+      ["/hive pull", "manual HiveMind pull now"],
+      ["/pause", "stop cron cycles"],
+      ["/resume", "start cron cycles again"],
+      ["/stop", "shut down agent"],
+    ]],
+  ];
+  const body = sections
+    .map(([title, cmds]) => `<b>${title}</b>\n` + cmds.map(([cmd, desc]) => `<code>${cmd}</code> — ${desc}`).join("\n"))
+    .join("\n\n");
+  return `<b>🤖 Meridian Commands</b>\n\n${body}`;
 }
 
 async function runDeterministicScreen(limit = 5) {
@@ -1296,19 +1394,15 @@ async function runDeterministicScreen(limit = 5) {
   const candidates = (top?.candidates || top?.pools || []).slice(0, limit);
   setLatestCandidates(candidates);
   if (candidates.length > 0) {
-    const lines = candidates.map((pool, i) => {
-      const feeTvl = pool.fee_active_tvl_ratio ?? pool.fee_tvl_ratio ?? "?";
-      const vol = pool.volume_window ?? pool.volume_24h ?? "?";
-      return `${i + 1}. ${pool.name} | ${pool.pool}\n   fee/aTVL ${feeTvl}% | vol $${vol} | organic ${pool.organic_score ?? "?"}`;
-    });
-    return `Top candidates (${candidates.length})\n\n${lines.join("\n")}`;
+    const cards = candidates.map(formatCandidateCard);
+    return `<b>🔍 Top Candidates</b> (${candidates.length})\n\n${cards.join("\n\n")}\n\n<code>/deploy n</code> to deploy a candidate`;
   }
   const examples = (top?.filtered_examples || []).slice(0, 3)
-    .map((entry) => `- ${entry.name}: ${entry.reason}`)
+    .map((entry) => `- ${escapeHtml(entry.name)}: ${escapeHtml(entry.reason)}`)
     .join("\n");
   return examples
-    ? `No candidates available.\nFiltered examples:\n${examples}`
-    : "No candidates available right now.";
+    ? `⛔ <b>No deploy</b>\nNo candidates passed the filters.\n\nFiltered examples:\n${examples}`
+    : "⛔ <b>No deploy</b>\nNo candidates available right now.";
 }
 
 async function deployLatestCandidate(index) {
@@ -1388,7 +1482,7 @@ async function drainTelegramQueue() {
 }
 
 async function telegramHandler(msg) {
-  const text = msg?.text?.trim();
+  let text = msg?.text?.trim();
   if (!text) return;
   if (msg?.isCallback && text.startsWith("cfg:")) {
     try {
@@ -1396,6 +1490,14 @@ async function telegramHandler(msg) {
     } catch (e) {
       await answerCallbackQuery(msg.callbackQueryId, e.message).catch(() => {});
     }
+    return;
+  }
+  if (msg?.isCallback && text.startsWith("act:")) {
+    await answerCallbackQuery(msg.callbackQueryId).catch(() => {});
+    text = MAIN_MENU_ACTIONS[text] || text;
+  }
+  if (text === "/start") {
+    await showMainMenu().catch((e) => sendMessage(`Menu error: ${e.message}`).catch(() => {}));
     return;
   }
   if (text === "/settings" || text === "/menu" || text === "/configmenu") {
@@ -1423,7 +1525,7 @@ async function telegramHandler(msg) {
   }
 
   if (text === "/help") {
-    await sendMessage(formatHelpText()).catch(() => {});
+    await sendHTML(formatHelpText()).catch(() => {});
     return;
   }
 
@@ -1433,7 +1535,7 @@ async function telegramHandler(msg) {
       const suffix = text === "/status" && positions.total_positions
         ? `\n\nUse /positions for the numbered list.`
         : "";
-      await sendMessage(`${formatWalletStatus(wallet, positions)}${suffix}`).catch(() => {});
+      await sendHTML(`${formatWalletStatus(wallet, positions)}${suffix}`).catch(() => {});
     } catch (e) {
       await sendMessage(`Error: ${e.message}`).catch(() => {});
     }
@@ -1441,7 +1543,7 @@ async function telegramHandler(msg) {
   }
 
   if (text === "/config") {
-    await sendMessage(formatConfigSnapshot()).catch(() => {});
+    await sendHTML(formatConfigSnapshot()).catch(() => {});
     return;
   }
 
@@ -1450,13 +1552,27 @@ async function telegramHandler(msg) {
       const { positions, total_positions } = await getMyPositions({ force: true });
       if (total_positions === 0) { await sendMessage("No open positions."); return; }
       const cur = config.management.solMode ? "◎" : "$";
-      const lines = positions.map((p, i) => {
-        const pnl = p.pnl_usd >= 0 ? `+${cur}${p.pnl_usd}` : `-${cur}${Math.abs(p.pnl_usd)}`;
-        const age = p.age_minutes != null ? `${p.age_minutes}m` : "?";
-        const oor = !p.in_range ? " ⚠️OOR" : "";
-        return `${i + 1}. ${p.pair} | ${cur}${p.total_value_usd} | PnL: ${pnl} | fees: ${cur}${p.unclaimed_fees_usd} | ${age}${oor}`;
+      const totalValue = positions.reduce((sum, p) => sum + (p.total_value_usd || 0), 0);
+      const totalPnl = positions.reduce((sum, p) => sum + (p.pnl_usd || 0), 0);
+      const sign = (n) => (n >= 0 ? "+" : "-");
+      const cards = positions.map((p, i) => {
+        const pnlPct = p.pnl_pct != null ? ` (${sign(p.pnl_pct)}${Math.abs(p.pnl_pct)}%)` : "";
+        const range = p.in_range
+          ? "🟢 in range"
+          : `🔴 out of range — ${formatAge(p.minutes_out_of_range)}`;
+        const yieldStr = p.fee_per_tvl_24h != null ? `${p.fee_per_tvl_24h}%/d` : "?";
+        return [
+          `<b>${i + 1}. ${escapeHtml(p.pair)}</b>`,
+          `💰 ${cur}${p.total_value_usd} · PnL ${sign(p.pnl_usd)}${cur}${Math.abs(p.pnl_usd)}${pnlPct}`,
+          `💵 Fees unclaimed: ${cur}${p.unclaimed_fees_usd} · Yield: ${yieldStr}`,
+          `⏱ ${formatAge(p.age_minutes)} old · ${range}`,
+        ].join("\n");
       });
-      await sendMessage(`📊 Open Positions (${total_positions}):\n\n${lines.join("\n")}\n\n/close <n> to close | /set <n> <note> to set instruction`);
+      const header = [
+        `<b>📈 Open Positions</b> (${total_positions})`,
+        `Total value: ${cur}${Math.round(totalValue * 100) / 100} · Total PnL: ${sign(totalPnl)}${cur}${Math.round(Math.abs(totalPnl) * 100) / 100}`,
+      ].join("\n");
+      await sendHTML(`${header}\n\n${cards.join("\n\n")}\n\n<code>/close n</code> to close · <code>/set n note</code> to set instruction`);
     } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
     return;
   }
@@ -1468,15 +1584,17 @@ async function telegramHandler(msg) {
       const { positions } = await getMyPositions({ force: true });
       if (idx < 0 || idx >= positions.length) { await sendMessage("Invalid number. Use /positions first."); return; }
       const pos = positions[idx];
-      await sendMessage([
-        `${idx + 1}. ${pos.pair}`,
-        `Pool: ${pos.pool}`,
-        `Position: ${pos.position}`,
-        `Range: ${pos.lower_bin} → ${pos.upper_bin} | active ${pos.active_bin}`,
-        `PnL: ${pos.pnl_pct ?? "?"}% | fees: ${config.management.solMode ? "◎" : "$"}${pos.unclaimed_fees_usd ?? "?"}`,
-        `Value: ${config.management.solMode ? "◎" : "$"}${pos.total_value_usd ?? "?"}`,
-        `Age: ${pos.age_minutes ?? "?"}m | ${pos.in_range ? "IN RANGE" : `OOR ${pos.minutes_out_of_range ?? 0}m`}`,
-        pos.instruction ? `Note: ${pos.instruction}` : null,
+      const cur = config.management.solMode ? "◎" : "$";
+      await sendHTML([
+        `<b>${idx + 1}. ${escapeHtml(pos.pair)}</b>`,
+        ``,
+        `Pool: <code>${escapeHtml(pos.pool)}</code>`,
+        `Position: <code>${escapeHtml(pos.position)}</code>`,
+        `Range: ${pos.lower_bin} → ${pos.upper_bin} (active ${pos.active_bin})`,
+        `PnL: ${pos.pnl_pct ?? "?"}% | Fees: ${cur}${pos.unclaimed_fees_usd ?? "?"}`,
+        `Value: ${cur}${pos.total_value_usd ?? "?"}`,
+        `Age: ${pos.age_minutes ?? "?"}m | ${pos.in_range ? "✅ IN RANGE" : `⚠️ OOR ${pos.minutes_out_of_range ?? 0}m`}`,
+        pos.instruction ? `Note: ${escapeHtml(pos.instruction)}` : null,
       ].filter(Boolean).join("\n"));
     } catch (e) {
       await sendMessage(`Error: ${e.message}`).catch(() => {});
@@ -1493,12 +1611,13 @@ async function telegramHandler(msg) {
       const pos = positions[idx];
       await sendMessage(`Closing ${pos.pair}...`);
       const result = await closePosition({ position_address: pos.position });
+      const cur = config.management.solMode ? "◎" : "$";
       if (result.success) {
         const closeTxs = result.close_txs?.length ? result.close_txs : result.txs;
-        const claimNote = result.claim_txs?.length ? `\nClaim txs: ${result.claim_txs.join(", ")}` : "";
-        await sendMessage(`✅ Closed ${pos.pair}\nPnL: ${config.management.solMode ? "◎" : "$"}${result.pnl_usd ?? "?"} | close txs: ${closeTxs?.join(", ") || "n/a"}${claimNote}`);
+        const claimNote = result.claim_txs?.length ? `\nClaim tx: <code>${escapeHtml(result.claim_txs[0])}</code>` : "";
+        await sendHTML(`✅ <b>Closed</b> ${escapeHtml(pos.pair)}\nPnL: ${cur}${result.pnl_usd ?? "?"} | Tx: <code>${escapeHtml(closeTxs?.[0] || "n/a")}</code>${claimNote}`);
       } else {
-        await sendMessage(`❌ Close failed: ${JSON.stringify(result)}`);
+        await sendHTML(`❌ <b>Close failed</b>\n${escapeHtml(result.error || "unknown error")}`);
       }
     } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
     return;
@@ -1513,12 +1632,12 @@ async function telegramHandler(msg) {
       for (const pos of positions) {
         try {
           const result = await closePosition({ position_address: pos.position });
-          results.push(`${pos.pair}: ${result.success ? "closed" : `failed (${result.error || "unknown"})`}`);
+          results.push(result.success ? `✅ ${escapeHtml(pos.pair)}: closed` : `❌ ${escapeHtml(pos.pair)}: ${escapeHtml(result.error || "failed")}`);
         } catch (error) {
-          results.push(`${pos.pair}: failed (${error.message})`);
+          results.push(`❌ ${escapeHtml(pos.pair)}: ${escapeHtml(error.message)}`);
         }
       }
-      await sendMessage(`Close-all finished.\n\n${results.join("\n")}`).catch(() => {});
+      await sendHTML(`<b>🔒 Close-all finished</b>\n\n${results.join("\n")}`).catch(() => {});
     } catch (e) {
       await sendMessage(`Error: ${e.message}`).catch(() => {});
     }
@@ -1534,7 +1653,7 @@ async function telegramHandler(msg) {
       if (idx < 0 || idx >= positions.length) { await sendMessage("Invalid number. Use /positions first."); return; }
       const pos = positions[idx];
       setPositionInstruction(pos.position, note);
-      await sendMessage(`✅ Note set for ${pos.pair}:\n"${note}"`);
+      await sendHTML(`✅ <b>Note set</b> for ${escapeHtml(pos.pair)}\n"${escapeHtml(note)}"`);
     } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
     return;
   }
@@ -1549,10 +1668,10 @@ async function telegramHandler(msg) {
         reason: "Telegram slash command /setcfg",
       });
       if (!result?.success) {
-        await sendMessage(`Config update failed.\nUnknown: ${(result?.unknown || []).join(", ") || "none"}`).catch(() => {});
+        await sendHTML(`❌ <b>Config update failed</b>\nUnknown: ${escapeHtml((result?.unknown || []).join(", ") || "none")}`).catch(() => {});
         return;
       }
-      await sendMessage(`✅ Updated ${key} = ${JSON.stringify(value)}`).catch(() => {});
+      await sendHTML(`✅ Updated <code>${escapeHtml(key)}</code> = <code>${escapeHtml(JSON.stringify(value))}</code>`).catch(() => {});
     } catch (e) {
       await sendMessage(`Error: ${e.message}`).catch(() => {});
     }
@@ -1561,7 +1680,7 @@ async function telegramHandler(msg) {
 
   if (text === "/screen") {
     try {
-      await sendMessage(await runDeterministicScreen(5)).catch(() => {});
+      await sendHTML(await runDeterministicScreen(5)).catch(() => {});
     } catch (e) {
       await sendMessage(`Error: ${e.message}`).catch(() => {});
     }
@@ -1569,7 +1688,7 @@ async function telegramHandler(msg) {
   }
 
   if (text === "/candidates") {
-    await sendMessage(describeLatestCandidates(5)).catch(() => {});
+    await sendHTML(describeLatestCandidates(5)).catch(() => {});
     return;
   }
 
@@ -1579,15 +1698,14 @@ async function telegramHandler(msg) {
       const idx = parseInt(deployMatch[1]) - 1;
       const { candidate, result, deployAmount, binsBelow } = await deployLatestCandidate(idx);
       const coverage = result.range_coverage
-        ? `Range: ${fmtPct(result.range_coverage.downside_pct)} downside | ${fmtPct(result.range_coverage.upside_pct)} upside`
-        : `Strategy: ${config.strategy.strategy} | binsBelow: ${binsBelow}`;
-      await sendMessage([
-        `✅ Deployed ${candidate.name}`,
-        `Pool: ${candidate.pool}`,
-        `Amount: ${deployAmount} SOL`,
+        ? `🎯 Range: ${fmtPct(result.range_coverage.downside_pct)} downside · ${fmtPct(result.range_coverage.upside_pct)} upside`
+        : `🎯 Strategy: ${config.strategy.strategy} · ${binsBelow} bins below`;
+      await sendHTML([
+        `🚀 <b>Deployed</b> ${escapeHtml(candidate.name)}`,
+        `💰 ${deployAmount} SOL`,
         coverage,
-        `Position: ${result.position || "n/a"}`,
-        result.txs?.length ? `Tx: ${result.txs[0]}` : null,
+        `📍 <code>${escapeHtml(result.position || "n/a")}</code>`,
+        result.txs?.length ? `🔗 <code>${escapeHtml(result.txs[0])}</code>` : null,
       ].filter(Boolean).join("\n")).catch(() => {});
     } catch (e) {
       await sendMessage(`Error: ${e.message}`).catch(() => {});
@@ -1598,7 +1716,7 @@ async function telegramHandler(msg) {
   if (text === "/pause") {
     stopCronJobs();
     cronStarted = false;
-    await sendMessage("⏸ Paused autonomous cycles. Telegram control still works. Use /resume to start again.").catch(() => {});
+    await sendHTML("⏸ <b>Paused</b> autonomous cycles. Telegram control still works. Use /resume to start again.").catch(() => {});
     return;
   }
 
@@ -1608,7 +1726,7 @@ async function telegramHandler(msg) {
       timers.managementLastRun = Date.now();
       timers.screeningLastRun = Date.now();
       startCronJobs();
-      await sendMessage("▶️ Autonomous cycles resumed.").catch(() => {});
+      await sendHTML("▶️ <b>Resumed</b> autonomous cycles.").catch(() => {});
     } else {
       await sendMessage("Autonomous cycles are already running.").catch(() => {});
     }
@@ -1620,7 +1738,7 @@ async function telegramHandler(msg) {
       const enabled = isHiveMindEnabled();
       const agentId = ensureAgentId();
       if (!enabled) {
-        await sendMessage(`HiveMind: disabled\nAgent ID: ${agentId}\nSet hiveMindApiKey to connect.`).catch(() => {});
+        await sendHTML(`<b>🧠 HiveMind</b>: disabled\nAgent ID: <code>${escapeHtml(agentId)}</code>\nSet hiveMindApiKey to connect.`).catch(() => {});
         return;
       }
       const isManualPull = text === "/hive pull";
@@ -1630,16 +1748,16 @@ async function telegramHandler(msg) {
         (pullMode === "auto" || isManualPull) ? pullHiveMindLessons(12) : Promise.resolve(null),
         (pullMode === "auto" || isManualPull) ? pullHiveMindPresets() : Promise.resolve(null),
       ]);
-      await sendMessage([
-        "HiveMind: enabled",
-        `Agent ID: ${agentId}`,
-        `URL: ${config.hiveMind.url}`,
+      await sendHTML([
+        `<b>🧠 HiveMind</b>: enabled`,
+        `Agent ID: <code>${escapeHtml(agentId)}</code>`,
+        `URL: ${escapeHtml(config.hiveMind.url)}`,
         `Pull mode: ${pullMode}`,
         `Register: ${registerResult ? "ok" : "warn"}`,
         `Shared lessons: ${Array.isArray(lessons) ? lessons.length : (pullMode === "manual" ? "manual" : 0)}`,
         `Presets: ${Array.isArray(presets) ? presets.length : (pullMode === "manual" ? "manual" : 0)}`,
         isManualPull ? "Manual pull: completed" : null,
-      ].join("\n")).catch(() => {});
+      ].filter(Boolean).join("\n")).catch(() => {});
     } catch (e) {
       await sendMessage(`HiveMind error: ${e.message}`).catch(() => {});
     }

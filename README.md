@@ -49,7 +49,7 @@ Agents are powered via **OpenRouter** and can be swapped for any compatible mode
 - Node.js 18+
 - [OpenRouter](https://openrouter.ai) API key
 - Solana wallet (base58 private key)
-- Solana RPC endpoint ([Helius](https://helius.xyz) recommended)
+- Solana RPC endpoint ([Helius](https://helius.xyz) or [QuickNode](https://quicknode.com) recommended)
 - Telegram bot token (optional)
 - [Claude Code](https://claude.ai/code) CLI (optional, for terminal slash commands)
 
@@ -75,7 +75,7 @@ The wizard writes **both** files at the repo root:
 
 | Goes in `.env` | Goes in `user-config.json` |
 |---|---|
-| `WALLET_PRIVATE_KEY`, `OPENROUTER_API_KEY`, `RPC_URL`, `HELIUS_API_KEY` | Risk preset, deploy size, max positions |
+| `WALLET_PRIVATE_KEY`, `OPENROUTER_API_KEY`, `RPC_URL` | Risk preset, deploy size, max positions |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_ALLOWED_USER_IDS` | Strategy, screening filters, exit rules, trailing TP |
 | `DRY_RUN` | Position sizing, cycle intervals, per-role LLM models, `solMode` |
 
@@ -87,9 +87,8 @@ Create `.env`:
 
 ```env
 WALLET_PRIVATE_KEY=your_base58_private_key
-RPC_URL=https://mainnet.helius-rpc.com/?api-key=YOUR_KEY
+RPC_URL=https://mainnet.helius-rpc.com/?api-key=YOUR_KEY   # or a QuickNode endpoint
 OPENROUTER_API_KEY=sk-or-...
-HELIUS_API_KEY=your_helius_key          # for wallet balance lookups
 TELEGRAM_BOT_TOKEN=123456:ABC...        # optional — for notifications + chat
 TELEGRAM_CHAT_ID=                       # auto-filled on first message
 DRY_RUN=true                            # set false for live trading
@@ -521,7 +520,7 @@ All fields are optional — defaults shown. Edit `user-config.json`.
 | `screeningModel` | `openai/gpt-oss-20b:free` | LLM for screening cycles |
 | `generalModel` | `openai/gpt-oss-20b:free` | LLM for REPL / chat |
 
-> Override model at runtime: `node cli.js config set screeningModel anthropic/claude-opus-4-5`
+> Override model at runtime: `node cli.js config set screeningModel claude-opus-4-8`
 
 ### Jupiter swap fee (referral)
 

@@ -216,6 +216,7 @@ function normalizeConfigValue(key, value) {
     "solMode",
     "darwinEnabled",
     "lpAgentRelayEnabled",
+    "dryRun",
   ]);
   const arrayKeys = new Set(["allowedLaunchpads", "blockedLaunchpads"]);
   const stringKeys = new Set([
@@ -406,6 +407,7 @@ const toolMap = {
       degenTargetFeeRatio: ["opportunity", "targetFeeRatio"],
       degenTargetLiquidity: ["opportunity", "targetLiquidity"],
       solMode: ["management", "solMode"],
+      dryRun: ["management", "dryRun"],
       minSolToOpen: ["management", "minSolToOpen"],
       deployAmountSol: ["management", "deployAmountSol"],
       gasReserve: ["management", "gasReserve"],
@@ -525,6 +527,11 @@ const toolMap = {
       const before = config[section][field];
       config[section][field] = val;
       log("config", `update_config: config.${section}.${field} ${before} → ${val} (verify: ${config[section][field]})`);
+    }
+    // DRY_RUN is read live from process.env across the codebase, not from config.*
+    if (applied.dryRun !== undefined) {
+      process.env.DRY_RUN = String(applied.dryRun);
+      log("config", `update_config: DRY_RUN env synced to ${process.env.DRY_RUN}`);
     }
     if (
       applied.binsBelow != null ||

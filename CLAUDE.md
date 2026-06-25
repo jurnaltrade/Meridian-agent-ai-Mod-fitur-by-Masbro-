@@ -12,7 +12,7 @@ Autonomous DLMM liquidity provider agent for Meteora pools on Solana.
 ## TL;DR (read this first)
 
 - **What it is**: Node 22+ ESM service that runs an LLM-driven loop
-  (OpenAI-compatible) to screen Meteora DLMM pools, deploy SOL into
+  (calls Claude directly via `@anthropic-ai/sdk`) to screen Meteora DLMM pools, deploy SOL into
   long/short positions, monitor them, and close them — all without a human
   in the loop. Telegram + Discord provide ops surface; HiveMind provides
   shared learning.
@@ -81,7 +81,7 @@ Autonomous DLMM liquidity provider agent for Meteora pools on Solana.
 |---|---:|---|
 | **Entry / orchestration** | | |
 | `index.js` | ~2016 | Daemon. Cron, REPL, Telegram bot, briefing, HiveMind bootstrap, PnL poller, deterministic close rules, single-candidate skip rule, settings menu. **All** automatic cycles start here. |
-| `agent.js` | 416 | `agentLoop(goal, maxSteps, history, agentType, model, maxOut, opts)`. The ReAct loop. Provider fallback, JSON repair, once-per-session tool locks, no-tool retries, `onToolStart`/`onToolFinish` callbacks for live Telegram messages. |
+| `agent.js` | 416 | `agentLoop(goal, maxSteps, history, agentType, model, maxOut, opts)`. The ReAct loop. Calls Claude directly via `@anthropic-ai/sdk` (Messages API — `system` is a top-level field, tool results are `tool_result` blocks in a `user` message, no OpenAI-style `tool` role). Bounded retry on 429/500/529, once-per-session tool locks, no-tool retries, `onToolStart`/`onToolFinish` callbacks for live Telegram messages. |
 | `cli.js` | 676 | One-shot CLI; every tool exposed as a subcommand. Also writes a `~/.meridian/SKILL.md` at startup for agent discovery. Loads `.env`/`user-config.json` from `~/.meridian/` if present, else from cwd. |
 | `setup.js` | ~750 | Interactive first-run wizard. Three presets (degen/moderate/safe) + custom. Covers strategy, screening filters, position sizing, trailing TP, per-role models. |
 | **Config & state** | | |
@@ -92,7 +92,7 @@ Autonomous DLMM liquidity provider agent for Meteora pools on Solana.
 | `tools/executor.js` | 844 | `executeTool(name, args)`. Pre-flight safety checks for `PROTECTED_TOOLS = {deploy, claim, close, swap, self_update}`. Validates pool thresholds via fresh pool discovery call before deploy. Post-tool side-effects: telegram notifications, pool-memory auto-annotation on `low yield` close, auto-swap base→SOL on close. |
 | `tools/dlmm.js` | huge | Meteora DLMM SDK wrapper. **Lazy-loads** `@meteora-ag/dlmm` to avoid CJS-import-time crash in DRY_RUN/test. Pool cache (5 min), metadata cache (15 min), positions cache (5 min TTL + inflight dedup). `deployPosition`, `getMyPositions`, `getPositionPnl`, `getActiveBin`, `closePosition`, `claimFees`, `searchPools`, `getWalletPositions`, `addLiquidity`, `withdrawLiquidity`. Also has relay-mode (zap-in via LPAgent) and wide-range path (multi-tx `createExtendedEmptyPosition` + `addLiquidityByStrategyChunkable` for >69 bin ranges). Asserts Meteora bin-array initialization rent never charged. |
 | `tools/screening.js` | 862 | `discoverPools`, `getTopCandidates` (hard filter + enrich + score), `getPoolDetail`. Scoring = `fee_tvl*1000 + organic*10 + vol/100 + holders/100`. Has Discord signal merge/only modes, PVP-rival detection. |
-| `tools/wallet.js` | 251 | `getWalletBalances` (Helius), `swapToken` (Jupiter Swap V2). `normalizeMint` collapses "SOL"/"native"/any So1-prefixed token to wrapped-SOL. Built-in referral: 50 bps to a fixed address (configurable). |
+| `tools/wallet.js` | 251 | `getWalletBalances` (provider-agnostic: reads `RPC_URL` via standard `getBalance`/`getParsedTokenAccountsByOwner` for both Token and Token-2022 programs, prices via Jupiter assets-search), `swapToken` (Jupiter Swap V2). `normalizeMint` collapses "SOL"/"native"/any So1-prefixed token to wrapped-SOL. Built-in referral: 50 bps to a fixed address (configurable). |
 | `tools/token.js` | 209 | `getTokenInfo` (Jupiter datapi), `getTokenHolders` (top 100 + filter pool-tagged), `getTokenNarrative` (Jupiter ChainInsight). Cross-references smart wallets from `smart-wallets.json`. |
 | `tools/study.js` | 152 | `studyTopLPers` → Agent Meridian `/top-lp` + `/study-top-lp`. Returns ranked LPer patterns (avg hold, win rate, preferred strategy). |
 | `tools/agent-meridian.js` | 110 | `agentMeridianJson(path, opts)` with retry/backoff. Default base = `https://api.agentmeridian.xyz/api`. |
@@ -316,11 +316,9 @@ All persistent files are loaded/saved on each call — no in-memory caching laye
 | Var | Required | Purpose |
 |---|---|---|
 | `WALLET_PRIVATE_KEY` | yes | Base58 (or JSON array) |
-| `RPC_URL` | yes | Solana RPC. Helius recommended. |
-| `OPENROUTER_API_KEY` (or `LLM_API_KEY`) | yes | LLM provider key. |
-| `LLM_BASE_URL` | no | Override for any OpenAI-compatible endpoint (LM Studio: `http://localhost:1234/v1`). |
-| `LLM_MODEL` | no | Default model. Per-role models in `user-config.json` override. |
-| `HELIUS_API_KEY` | recommended | Wallet balance lookups via Helius. |
+| `RPC_URL` | yes | Solana RPC (any provider — Helius, QuickNode, etc.). Used directly for wallet balance lookups (`getBalance`/`getParsedTokenAccountsByOwner`), no vendor-specific API needed. |
+| `ANTHROPIC_API_KEY` (or `LLM_API_KEY`, or `OPENROUTER_API_KEY` as a last-resort fallback name) | yes | Anthropic API key. `agent.js` checks `ANTHROPIC_API_KEY` first, falling back to `LLM_API_KEY`, then `OPENROUTER_API_KEY` — so a key already sitting under the legacy `OPENROUTER_API_KEY` name still works without renaming. |
+| `LLM_MODEL` | no | Default Claude model ID (e.g. `claude-sonnet-4-6`, `claude-opus-4-8` — no provider prefix, dashes not dots). Per-role models in `user-config.json` override. |
 | `LPAGENT_API_KEY` | optional | Direct LPAgent positions fetch fallback. |
 | `JUPITER_API_KEY` | optional | Better rate limit on Jupiter Swap. Default key baked in. |
 | `TELEGRAM_BOT_TOKEN` | no | Notifications + REPL. |
