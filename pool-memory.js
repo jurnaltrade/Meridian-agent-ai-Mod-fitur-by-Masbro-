@@ -43,6 +43,10 @@ function isOorCloseReason(reason) {
   return text === "oor" || text.includes("out of range") || text.includes("oor");
 }
 
+function isStopLossCloseReason(reason) {
+  return String(reason || "").toLowerCase().includes("stop loss");
+}
+
 function isAdjustedWinRateExcludedReason(reason) {
   const text = String(reason || "").trim().toLowerCase();
   return text.includes("out of range") ||
@@ -176,6 +180,19 @@ export function recordPoolDeploy(poolAddress, deployData) {
     log("pool-memory", `Cooldown set for ${entry.name} until ${cooldownUntil} (low yield close)`);
   }
 
+  // Set cooldown after a stop-loss — token just cost us a realized loss, don't re-enter soon
+  const stopLossCooldownHours = Math.max(0, Number(config.management.stopLossCooldownHours ?? 12));
+  if (isStopLossCloseReason(deploy.close_reason) && stopLossCooldownHours > 0) {
+    const poolCooldownUntil = setPoolCooldown(entry, stopLossCooldownHours, "stop loss");
+    log("pool-memory", `Cooldown set for ${entry.name} until ${poolCooldownUntil} (stop loss)`);
+    if (entry.base_mint) {
+      const mintCooldownUntil = setBaseMintCooldown(db, entry.base_mint, stopLossCooldownHours, "stop loss");
+      if (mintCooldownUntil) {
+        log("pool-memory", `Base mint cooldown set for ${entry.base_mint.slice(0, 8)} until ${mintCooldownUntil} (stop loss)`);
+      }
+    }
+  }
+
   const oorTriggerCount = config.management.oorCooldownTriggerCount ?? 3;
   const oorCooldownHours = config.management.oorCooldownHours ?? 12;
   const recentDeploys = entry.deploys.slice(-oorTriggerCount);
@@ -262,6 +279,13 @@ export function getPoolMemory({ pool_address }) {
     };
   }
 
+  // Fraction of past deploys (with a recorded PnL) that closed because price
+  // left the range (OOR / pumped far above) rather than from a clean in-range
+  // exit. High = structurally range-unstable pool.
+  const withPnl = (entry.deploys || []).filter((d) => Number.isFinite(d.pnl_pct));
+  const excludedCount = withPnl.filter((d) => isAdjustedWinRateExcludedReason(d.close_reason)).length;
+  const oorExclusionRate = withPnl.length > 0 ? excludedCount / withPnl.length : 0;
+
   return {
     pool_address,
     known: true,
@@ -272,6 +296,7 @@ export function getPoolMemory({ pool_address }) {
     win_rate: entry.win_rate,
     adjusted_win_rate: entry.adjusted_win_rate ?? 0,
     adjusted_win_rate_sample_count: entry.adjusted_win_rate_sample_count ?? 0,
+    oor_exclusion_rate: Math.round(oorExclusionRate * 100) / 100,
     last_deployed_at: entry.last_deployed_at,
     last_outcome: entry.last_outcome,
     cooldown_until: entry.cooldown_until || null,
@@ -281,6 +306,45 @@ export function getPoolMemory({ pool_address }) {
     notes: entry.notes,
     history: entry.deploys.slice(-10), // last 10 deploys
   };
+}
+
+/**
+ * Hard-gate a pool by its deploy history. Pure function — no side effects.
+ * Two reject signatures (either fires, once enough history exists):
+ *   1. Range-unstable: most past deploys left the range (OOR / pumped). The raw
+ *      win rate can look fine while every "win" was just price variance, never a
+ *      clean in-range fee earner (adjusted_win_rate ~0).
+ *   2. In-range loser: enough clean closes, but low win rate when it did stay in range.
+ *
+ * @param {Object} mem        - result of getPoolMemory({ pool_address })
+ * @param {Object} thresholds - config.screening (minPoolDeploysForGate, maxPoolExclusionRate, minPoolAdjustedWinRate)
+ * @returns {{ block: boolean, reason?: string }}
+ */
+export function evaluatePoolHistoryGate(mem, thresholds = {}) {
+  const {
+    minPoolDeploysForGate = 3,
+    maxPoolExclusionRate = 0.6,
+    minPoolAdjustedWinRate = 20,
+  } = thresholds;
+
+  if (!mem || !mem.known) return { block: false };
+  if ((mem.total_deploys ?? 0) < minPoolDeploysForGate) return { block: false };
+
+  if (mem.oor_exclusion_rate != null && mem.oor_exclusion_rate >= maxPoolExclusionRate) {
+    return {
+      block: true,
+      reason: `range-unstable — ${Math.round(mem.oor_exclusion_rate * 100)}% of ${mem.total_deploys} past deploys left range (OOR/pumped), clean in-range closes=${mem.adjusted_win_rate_sample_count ?? 0}`,
+    };
+  }
+
+  if ((mem.adjusted_win_rate_sample_count ?? 0) >= 2 && (mem.adjusted_win_rate ?? 0) < minPoolAdjustedWinRate) {
+    return {
+      block: true,
+      reason: `in-range loser — adjusted_win_rate ${mem.adjusted_win_rate}% over ${mem.adjusted_win_rate_sample_count} clean closes (< ${minPoolAdjustedWinRate}%)`,
+    };
+  }
+
+  return { block: false };
 }
 
 /**

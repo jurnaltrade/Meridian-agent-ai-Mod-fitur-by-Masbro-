@@ -1,10 +1,14 @@
 import fs from "fs";
 import { log } from "./logger.js";
-import { getPerformanceSummary } from "./lessons.js";
+import { getPerformanceSummary, computeEdge } from "./lessons.js";
 import { repoPath } from "./repo-root.js";
 
 const STATE_FILE = repoPath("state.json");
 const LESSONS_FILE = repoPath("lessons.json");
+
+function escapeHtml(x) {
+  return String(x).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
 
 export async function generateBriefing() {
   const state = loadJson(STATE_FILE) || { positions: {}, recentEvents: [] };
@@ -29,6 +33,7 @@ export async function generateBriefing() {
   // 4. Current State
   const openPositions = allPositions.filter(p => !p.closed);
   const perfSummary = getPerformanceSummary();
+  const edge24 = computeEdge(perfLast24h);
 
   // 5. Format Message
   const lines = [
@@ -44,10 +49,16 @@ export async function generateBriefing() {
     perfLast24h.length > 0
       ? `📈 Win Rate (24h): ${Math.round((perfLast24h.filter(p => p.pnl_usd > 0).length / perfLast24h.length) * 100)}%`
       : "📈 Win Rate (24h): N/A",
+    edge24
+      ? `🎯 EV/posisi: ${edge24.ev_pct >= 0 ? "+" : ""}${edge24.ev_pct}% (${edge24.ev_usd >= 0 ? "+" : ""}$${edge24.ev_usd}) · payoff ${edge24.payoff_ratio ?? "—"}:1`
+      : null,
+    edge24?.steamroller_warning
+      ? `⚠️ Steamroller: win rate tinggi tapi payoff &lt;1 — satu loss bisa hapus banyak win`
+      : null,
     "",
     `<b>Lessons Learned:</b>`,
     lessonsLast24h.length > 0
-      ? lessonsLast24h.map(l => `• ${l.rule}`).join("\n")
+      ? lessonsLast24h.map(l => `• ${escapeHtml(l.rule)}`).join("\n")
       : "• No new lessons recorded overnight.",
     "",
     `<b>Current Portfolio:</b>`,
@@ -55,10 +66,13 @@ export async function generateBriefing() {
     perfSummary
       ? `📊 All-time PnL: $${perfSummary.total_pnl_usd.toFixed(2)} (${perfSummary.win_rate_pct}% win)`
       : "",
+    perfSummary && perfSummary.ev_pct != null
+      ? `🎯 All-time EV/posisi: ${perfSummary.ev_pct >= 0 ? "+" : ""}${perfSummary.ev_pct}% · payoff ${perfSummary.payoff_ratio ?? "—"}:1${perfSummary.steamroller_warning ? " ⚠️" : ""}`
+      : null,
     "────────────────"
   ];
 
-  return lines.join("\n");
+  return lines.filter(l => l !== null && l !== undefined).join("\n");
 }
 
 function loadJson(file) {

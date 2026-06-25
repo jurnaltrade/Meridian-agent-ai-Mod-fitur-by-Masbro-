@@ -98,6 +98,10 @@ export const config = {
     blockedLaunchpads:  u.blockedLaunchpads  ?? [],  // e.g. ["letsbonk.fun", "pump.fun"]
     minTokenAgeHours:   u.minTokenAgeHours   ?? null, // null = no minimum
     maxTokenAgeHours:   u.maxTokenAgeHours   ?? null, // null = no maximum
+    // Pool-history hard gate (non-LLM-overridable, enforced in deploy_position safety checks)
+    minPoolDeploysForGate:  u.minPoolDeploysForGate  ?? 3,   // min past deploys before trusting pool history
+    maxPoolExclusionRate:   u.maxPoolExclusionRate   ?? 0.6, // reject if >= this frac of past deploys left range (OOR/pumped)
+    minPoolAdjustedWinRate: u.minPoolAdjustedWinRate ?? 20,  // reject if adjusted win rate < this (sample >= 2)
   },
 
   // ─── Position Management ────────────────
@@ -115,6 +119,7 @@ export const config = {
     repeatDeployCooldownHours: u.repeatDeployCooldownHours ?? 12,
     repeatDeployCooldownScope: u.repeatDeployCooldownScope ?? "token", // pool | token | both
     repeatDeployCooldownMinFeeEarnedPct: u.repeatDeployCooldownMinFeeEarnedPct ?? u.repeatDeployCooldownMinFeeYieldPct ?? 0,
+    stopLossCooldownHours: u.stopLossCooldownHours ?? 12,
     minVolumeToRebalance:  u.minVolumeToRebalance  ?? 1000,
     stopLossPct:           u.stopLossPct           ?? u.emergencyPriceDropPct ?? -50,
     takeProfitPct:         u.takeProfitPct         ?? u.takeProfitFeePct ?? 5,
