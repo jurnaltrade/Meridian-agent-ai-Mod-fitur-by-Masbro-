@@ -230,6 +230,7 @@ export async function confirmIndicatorPreset({
   preset = side === "entry" ? config.indicators.entryPreset : config.indicators.exitPreset,
   intervals = config.indicators.intervals,
   refresh = false,
+  requireAll = config.indicators.requireAllIntervals,
 } = {}) {
   if (!config.indicators.enabled || !mint || !preset) {
     return { enabled: false, confirmed: true, reason: "Indicators disabled or not configured", intervals: [] };
@@ -279,8 +280,8 @@ export async function confirmIndicatorPreset({
     };
   }
 
-  const requireAll = !!config.indicators.requireAllIntervals;
-  const confirmed = requireAll
+  const requireAllResolved = !!requireAll;
+  const confirmed = requireAllResolved
     ? successful.every((entry) => entry.confirmed)
     : successful.some((entry) => entry.confirmed);
 
@@ -290,7 +291,7 @@ export async function confirmIndicatorPreset({
     skipped: false,
     preset,
     side,
-    requireAllIntervals: requireAll,
+    requireAllIntervals: requireAllResolved,
     reason: confirmed
       ? `${preset} confirmed on ${successful.filter((entry) => entry.confirmed).map((entry) => entry.interval).join(", ")}`
       : `${preset} not confirmed on ${successful.map((entry) => entry.interval).join(", ")}`,

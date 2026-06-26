@@ -80,9 +80,30 @@ async function getDLMM() {
 let _connection = null;
 let _wallet = null;
 
+// Some RPC plans (e.g. QuickNode's free "Discover" tier) cap getMultipleAccounts
+// at a handful of pubkeys per call, well under what the DLMM SDK requests when
+// covering a wide bin range. Set RPC_MAX_MULTI_ACCOUNTS below 100 to transparently
+// split those calls into chunks the plan can serve.
+const MAX_MULTI_ACCOUNTS = parseInt(process.env.RPC_MAX_MULTI_ACCOUNTS, 10) || 100;
+
 function getConnection() {
   if (!_connection) {
     _connection = new Connection(process.env.RPC_URL, "confirmed");
+    if (MAX_MULTI_ACCOUNTS < 100) {
+      const original = _connection.getMultipleAccountsInfoAndContext.bind(_connection);
+      _connection.getMultipleAccountsInfoAndContext = async (publicKeys, commitmentOrConfig) => {
+        if (publicKeys.length <= MAX_MULTI_ACCOUNTS) return original(publicKeys, commitmentOrConfig);
+        const chunks = [];
+        for (let i = 0; i < publicKeys.length; i += MAX_MULTI_ACCOUNTS) {
+          chunks.push(publicKeys.slice(i, i + MAX_MULTI_ACCOUNTS));
+        }
+        const results = await Promise.all(chunks.map((chunk) => original(chunk, commitmentOrConfig)));
+        return {
+          context: results[results.length - 1].context,
+          value: results.flatMap((r) => r.value),
+        };
+      };
+    }
   }
   return _connection;
 }

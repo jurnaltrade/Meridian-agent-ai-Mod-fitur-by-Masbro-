@@ -23,6 +23,7 @@ import {
   notifyOutOfRange,
   isEnabled as telegramEnabled,
   createLiveMessage,
+  escapeHtml,
 } from "./telegram.js";
 import { generateBriefing } from "./briefing.js";
 import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions, setPositionInstruction, updatePnlAndCheckExits, confirmPeak, registerExitSignal } from "./state.js";
@@ -41,6 +42,60 @@ const entrypointPath = process.env.pm_exec_path || process.argv[1];
 const indexPath = fileURLToPath(import.meta.url);
 const isMain = process.env.pm_id != null
   || (entrypointPath ? path.resolve(entrypointPath) === indexPath : false);
+
+// ─── Alert Formatting ─────────────────────────────────────────────
+function formatManagementAlert(positions, actionMap, totalValue, totalUnclaimed, cur) {
+  if (positions.length === 0) return "📊 <b>Management Cycle</b>\n✓ No open positions";
+
+  const actions = { CLOSE: 0, CLAIM: 0, STAY: 0, INSTRUCTION: 0 };
+  const details = positions.map((p) => {
+    const act = actionMap.get(p.position);
+    if (act) actions[act.action]++;
+
+    const inRange = p.in_range ? "🟢" : "🔴";
+    const icon = act.action === "CLOSE" ? "🔴" : act.action === "CLAIM" ? "💰" : act.action === "INSTRUCTION" ? "⚙️" : "✓";
+
+    return `${icon} <b>${p.pair}</b>\n  ${inRange} ${p.age_minutes}m | ${cur}${p.total_value_usd?.toFixed(2) ?? "?"} | PnL ${p.pnl_pct >= 0 ? "+" : ""}${p.pnl_pct ?? "?"}%`;
+  });
+
+  const summary = [
+    actions.CLOSE > 0 && `🔴 Close: ${actions.CLOSE}`,
+    actions.CLAIM > 0 && `💰 Claim: ${actions.CLAIM}`,
+    actions.INSTRUCTION > 0 && `⚙️ Eval: ${actions.INSTRUCTION}`,
+  ].filter(Boolean).join(" | ");
+
+  return [
+    `📊 <b>Management Cycle</b> (${positions.length} position${positions.length !== 1 ? "s" : ""})`,
+    `Portfolio: ${cur}${totalValue.toFixed(2)} | Fees: ${cur}${totalUnclaimed.toFixed(2)}`,
+    summary || "✓ All HOLD",
+    "",
+    details.join("\n"),
+  ].join("\n");
+}
+
+function formatScreeningAlert(report) {
+  if (!report) return null;
+
+  // Extract key info from report
+  const hasError = /error|failed/i.test(report);
+  const hasDeploy = /✅|success|deploy/i.test(report);
+  const noDeployMatch = report.match(/🔴\s*NO DEPLOY|no candidates/i);
+
+  if (hasError) {
+    return `❌ <b>Screening Cycle</b>\n${report.slice(0, 150)}`;
+  }
+
+  if (hasDeploy && !noDeployMatch) {
+    return `✅ <b>Screening Cycle</b>\n<b>Deployed!</b>\n${report}`;
+  }
+
+  if (noDeployMatch) {
+    const lines = report.split("\n").slice(0, 5);
+    return `⏭️ <b>Screening Cycle</b>\n${lines.join("\n")}`;
+  }
+
+  return `🔍 <b>Screening Cycle</b>\n${report.slice(0, 200)}`;
+}
 
 if (isMain) {
   log("startup", "DLMM LP Agent starting...");
@@ -230,16 +285,16 @@ export async function runManagementCycle({ silent = false } = {}) {
 
   try {
     if (!silent && telegramEnabled()) {
-      liveMessage = await createLiveMessage("🔄 Management Cycle", "Evaluating positions...");
+      liveMessage = await createLiveMessage("Management Cycle", "Evaluating positions...");
     }
     const livePositions = await getMyPositions({ force: true }).catch(() => null);
     positions = livePositions?.positions || [];
 
     if (positions.length === 0) {
       log("cron", "No open positions — triggering screening cycle");
-      mgmtReport = "No open positions. Triggering screening cycle.";
+      mgmtReport = "📊 <b>Management Cycle</b>\n✓ No open positions — triggering screening...";
       runScreeningCycle().catch((e) => log("cron_error", `Triggered screening failed: ${e.message}`));
-      return mgmtReport;
+      throw new Error("no_open_positions");
     }
 
     // Snapshot + load pool memory
@@ -301,7 +356,7 @@ export async function runManagementCycle({ silent = false } = {}) {
       const statusLabel = act.action === "INSTRUCTION" ? "HOLD (instruction)" : act.action;
       let line = `**${p.pair}** | Age: ${p.age_minutes ?? "?"}m | Val: ${val} | Unclaimed: ${unclaimed} | PnL: ${p.pnl_pct ?? "?"}% | Yield: ${p.fee_per_tvl_24h ?? "?"}% | ${inRange} | ${statusLabel}`;
       if (p.instruction) line += `\nNote: "${p.instruction}"`;
-      if (act.action === "CLOSE" && act.rule === "exit") line += `\n⚡ Trailing TP: ${act.reason}`;
+      if (act.action === "CLOSE" && act.rule === "exit") line += `\nTrailing TP: ${act.reason}`;
       if (act.action === "CLOSE" && act.rule && act.rule !== "exit") line += `\nRule ${act.rule}: ${act.reason}`;
       if (act.action === "CLAIM") line += `\n→ Claiming fees`;
       return line;
@@ -313,8 +368,10 @@ export async function runManagementCycle({ silent = false } = {}) {
       : "no action";
 
     const cur = config.management.solMode ? "◎" : "$";
-    mgmtReport = reportLines.join("\n\n") +
-      `\n\nSummary: 💼 ${positions.length} positions | ${cur}${totalValue.toFixed(4)} | fees: ${cur}${totalUnclaimed.toFixed(4)} | ${actionSummary}`;
+    // Use formatted alert for Telegram display
+    const telegramAlert = formatManagementAlert(positionData, actionMap, totalValue, totalUnclaimed, cur);
+    // Keep internal report detailed for logging
+    mgmtReport = telegramAlert;
 
     // ── Call LLM only if action needed ──────────────────────────────
     const actionPositions = positionData.filter(p => {
@@ -345,7 +402,7 @@ export async function runManagementCycle({ silent = false } = {}) {
     if (!silent && telegramEnabled()) {
       if (mgmtReport) {
         if (liveMessage) await liveMessage.finalize(stripThink(mgmtReport)).catch(() => {});
-        else sendMessage(`🔄 Management Cycle\n\n${stripThink(mgmtReport)}`).catch(() => { });
+        else sendMessage(`Management Cycle\n\n${stripThink(mgmtReport)}`).catch(() => { });
       }
       for (const p of positions) {
         if (!p.in_range && p.minutes_out_of_range >= config.management.outOfRangeWaitMinutes) {
@@ -373,29 +430,27 @@ export async function runScreeningCycle({ silent = false } = {}) {
     [prePositions, preBalance] = await Promise.all([getMyPositions({ force: true }), getWalletBalances()]);
     if (prePositions.total_positions >= config.risk.maxPositions) {
       log("cron", `Screening skipped — max positions reached (${prePositions.total_positions}/${config.risk.maxPositions})`);
-      screenReport = `Screening skipped — max positions reached (${prePositions.total_positions}/${config.risk.maxPositions}).`;
+      screenReport = `📊 <b>Screening Cycle</b>\n⏸️ Max positions reached (${prePositions.total_positions}/${config.risk.maxPositions})`;
       appendDecision({
         type: "skip",
         actor: "SCREENER",
         summary: "Screening skipped",
         reason: `Max positions reached (${prePositions.total_positions}/${config.risk.maxPositions})`,
       });
-      _screeningBusy = false;
-      return screenReport;
+      throw new Error("max_positions_reached");
     }
     const minRequired = config.management.deployAmountSol + config.management.gasReserve;
     const isDryRun = process.env.DRY_RUN === "true";
     if (!isDryRun && preBalance.sol < minRequired) {
       log("cron", `Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} < ${minRequired} needed for deploy + gas)`);
-      screenReport = `Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} < ${minRequired} needed for deploy + gas).`;
+      screenReport = `🔍 <b>Screening Cycle</b>\n⏸️ Insufficient SOL (◎${preBalance.sol.toFixed(3)} < ◎${minRequired})`;
       appendDecision({
         type: "skip",
         actor: "SCREENER",
         summary: "Screening skipped",
         reason: `Insufficient SOL (${preBalance.sol.toFixed(3)} < ${minRequired})`,
       });
-      _screeningBusy = false;
-      return screenReport;
+      throw new Error("insufficient_sol");
     }
   } catch (e) {
     log("cron_error", `Screening pre-check failed: ${e.message}`);
@@ -404,7 +459,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
     return screenReport;
   }
   if (!silent && telegramEnabled()) {
-    liveMessage = await createLiveMessage("🔍 Screening Cycle", "Scanning candidates...");
+    liveMessage = await createLiveMessage("Screening Cycle", "Scanning candidates...");
   }
   timers.screeningLastRun = Date.now();
   log("cron", `Starting screening cycle [model: ${config.llm.screeningModel}]`);
@@ -490,7 +545,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
       if (skipReason) {
         const candidateName = passing[0].pool?.name || "unknown";
         screenReport = [
-          "⛔ NO DEPLOY",
+          "🔴 NO DEPLOY",
           "",
           "Cycle finished with no valid entry.",
           "",
@@ -534,11 +589,16 @@ export async function runScreeningCycle({ silent = false } = {}) {
         ? `  pvp: HIGH — rival ${pool.pvp_rival_name || pool.pvp_symbol} (${pool.pvp_rival_mint?.slice(0, 8)}...) has pool ${pool.pvp_rival_pool?.slice(0, 8)}..., tvl=$${pool.pvp_rival_tvl}, holders=${pool.pvp_rival_holders}, fees=${pool.pvp_rival_fees}SOL`
         : null;
 
+      const cooldownLine = pool.cooldown_override
+        ? `  ⚠️ COOLDOWN OVERRIDE: ${pool.cooldown_override_reason} — this pool/token would normally be skipped on cooldown; it only passed because chart indicators gave a strong confirmed entry signal. Weigh this candidate more cautiously (e.g. smaller size) than a fresh, non-cooldown pick.`
+        : null;
+
       const block = [
         `POOL: ${pool.name} (${pool.pool})`,
         `  metrics: bin_step=${pool.bin_step}, fee_pct=${pool.fee_pct}%, fee_tvl=${pool.fee_active_tvl_ratio}, vol=$${pool.volume_window}, tvl=$${pool.tvl ?? pool.active_tvl}, volatility_${pool.volatility_timeframe || "30m"}=${pool.volatility}, mcap=$${pool.mcap}, organic=${pool.organic_score}${pool.token_age_hours != null ? `, age=${pool.token_age_hours}h` : ""}`,
         `  audit: top10=${top10Pct}%, bots=${botPct}%, fees=${feesSol}SOL${launchpad ? `, launchpad=${launchpad}` : ""}`,
         pvpLine,
+        cooldownLine,
         `  smart_wallets: ${sw?.in_pool?.length ?? 0} present${sw?.in_pool?.length ? ` → CONFIDENCE BOOST (${sw.in_pool.map(w => w.name).join(", ")})` : ""}`,
         activeBin != null ? `  active_bin: ${activeBin}` : null,
         priceChange != null ? `  1h: price${priceChange >= 0 ? "+" : ""}${priceChange}%, net_buyers=${netBuyers ?? "?"}` : null,
@@ -559,6 +619,8 @@ export async function runScreeningCycle({ silent = false } = {}) {
           smart_wallets_present: (sw?.in_pool?.length ?? 0) > 0,
           narrative_quality:     n?.narrative ? "present" : "absent",
           volatility:            pool.volatility            ?? null,
+          cooldown_override:     !!pool.cooldown_override,
+          cooldown_override_reason: pool.cooldown_override_reason ?? null,
         });
       }
 
@@ -586,7 +648,7 @@ STEPS:
    For single-side SOL deploys, do not invent upside:
    set amount_y only, keep amount_x = 0, keep bins_above = 0, and let the upper bin stay at the active bin.
 4. Report in this exact format (no tables, no extra sections):
-   🚀 DEPLOYED
+   ✅ DEPLOYED
 
    <pool name>
    <pool address>
@@ -620,7 +682,7 @@ STEPS:
    WHY THIS WON
    <2-4 concise sentences on why this pool won, key risks, and why it still beat the alternatives>
 5. If no pool qualifies, report in this exact format instead:
-   ⛔ NO DEPLOY
+   🔴 NO DEPLOY
 
    Cycle finished with no valid entry.
 
@@ -648,7 +710,7 @@ IMPORTANT:
         },
       });
     screenReport = content;
-    if (/⛔\s*NO DEPLOY/i.test(content)) {
+    if (/🔴\s*NO DEPLOY/i.test(content)) {
       appendDecision({
         type: "no_deploy",
         actor: "SCREENER",
@@ -670,8 +732,11 @@ IMPORTANT:
     _screeningBusy = false;
     if (!silent && telegramEnabled()) {
       if (screenReport) {
-        if (liveMessage) await liveMessage.finalize(stripThink(screenReport)).catch(() => {});
-        else sendMessage(`🔍 Screening Cycle\n\n${stripThink(screenReport)}`).catch(() => { });
+        const formattedAlert = formatScreeningAlert(screenReport);
+        if (formattedAlert) {
+          if (liveMessage) await liveMessage.finalize(stripThink(formattedAlert)).catch(() => {});
+          else sendHTML(formattedAlert).catch(() => { });
+        }
       }
     }
   }
@@ -968,46 +1033,82 @@ function getLatestCandidatesMeta() {
   };
 }
 
+function formatCompact(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return "?";
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+  if (v >= 1_000) return `${(v / 1_000).toFixed(1)}k`;
+  return String(Math.round(v));
+}
+
+function formatCandidateCard(pool, i) {
+  const feeTvl = pool.fee_active_tvl_ratio ?? pool.fee_tvl_ratio;
+  const vol = pool.volume_window ?? pool.volume_24h;
+  const organic = pool.organic_score;
+  const holders = pool.holders ?? pool.base_token_holders;
+  const facts = [
+    `fee/TVL ${feeTvl ?? "?"}%`,
+    `vol $${formatCompact(vol)}`,
+    `organic ${organic ?? "?"}`,
+    holders != null ? `${formatCompact(holders)} holders` : null,
+    pool.active_pct != null ? `${pool.active_pct}% in-range` : null,
+  ].filter(Boolean).join(" · ");
+  const flag = pool.is_pvp ? " ⚠️ pvp" : pool.cooldown_override ? " ⚠️ cooldown exception" : "";
+  return [
+    `<b>${i + 1}. ${escapeHtml(pool.name || "unknown")}</b>${flag}`,
+    facts,
+    `<code>${escapeHtml(pool.pool || "")}</code>`,
+  ].join("\n");
+}
+
 function describeLatestCandidates(limit = 5) {
-  if (!_latestCandidates.length) return "No cached candidates yet. Run /screen first.";
-  const lines = _latestCandidates.slice(0, limit).map((pool, i) => {
-    const feeTvl = pool.fee_active_tvl_ratio ?? pool.fee_tvl_ratio ?? "?";
-    const vol = pool.volume_window ?? pool.volume_24h ?? "?";
-    const active = pool.active_pct ?? "?";
-    const organic = pool.organic_score ?? "?";
-    return `${i + 1}. ${pool.name} | fee/aTVL ${feeTvl}% | vol $${vol} | in-range ${active}% | organic ${organic}`;
-  });
+  if (!_latestCandidates.length) return "🔍 <b>Candidates</b>\nNo cached pools yet — run /screen first.";
+  const cards = _latestCandidates.slice(0, limit).map(formatCandidateCard);
   const age = _latestCandidatesAt ? new Date(_latestCandidatesAt).toLocaleString("en-US", { hour12: false }) : "unknown";
-  return `Latest candidates (${_latestCandidates.length}) — updated ${age}\n\n${lines.join("\n")}`;
+  return `🔍 <b>Candidates</b> · ${_latestCandidates.length} pools | ${age}\n\n${cards.join("\n\n")}`;
+}
+
+function formatAge(minutes) {
+  if (minutes == null) return "?";
+  const m = Math.max(0, Math.floor(minutes));
+  const days = Math.floor(m / 1440);
+  const hours = Math.floor((m % 1440) / 60);
+  const mins = m % 60;
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${mins}m`;
+  return `${mins}m`;
 }
 
 function formatWalletStatus(wallet, positions) {
   const deployAmount = computeDeployAmount(wallet.sol);
   const hive = isHiveMindEnabled() ? "on" : "off";
+  const mode = process.env.DRY_RUN === "true" ? "dry run" : "live";
   return [
-    `Wallet: ${wallet.sol} SOL ($${wallet.sol_usd})`,
+    `💰 <b>Wallet</b>`,
+    `${wallet.sol} SOL | $${wallet.sol_usd} USD`,
     `SOL price: $${wallet.sol_price}`,
-    `Open positions: ${positions.total_positions}/${config.risk.maxPositions}`,
-    `Next deploy amount: ${deployAmount} SOL`,
-    `Dry run: ${process.env.DRY_RUN === "true" ? "yes" : "no"}`,
-    `HiveMind: ${hive}`,
+    ``,
+    `📈 <b>Positions</b> · ${positions.total_positions}/${config.risk.maxPositions}`,
+    `Next deploy: ${deployAmount} SOL`,
+    ``,
+    `⚙️ Mode: ${mode} | 🧠 HiveMind: ${hive}`,
   ].join("\n");
 }
 
 function formatConfigSnapshot() {
   return [
-    "Config snapshot",
-    "",
-    `Strategy: ${config.strategy.strategy} | binsBelow: ${config.strategy.minBinsBelow}-${config.strategy.maxBinsBelow} | default ${config.strategy.defaultBinsBelow}`,
-    `Deploy: ${config.management.deployAmountSol} SOL | gasReserve: ${config.management.gasReserve} | maxPositions: ${config.risk.maxPositions}`,
-    `Stop loss: ${config.management.stopLossPct}% | take profit: ${config.management.takeProfitPct}%`,
-    `Trailing: ${config.management.trailingTakeProfit ? "on" : "off"} | trigger ${config.management.trailingTriggerPct}% | drop ${config.management.trailingDropPct}%`,
-    `OOR: ${config.management.outOfRangeWaitMinutes}m | cooldown ${config.management.oorCooldownTriggerCount}x / ${config.management.oorCooldownHours}h`,
-    `Repeat deploy cooldown: ${config.management.repeatDeployCooldownEnabled ? "on" : "off"} | ${config.management.repeatDeployCooldownTriggerCount}x / ${config.management.repeatDeployCooldownHours}h | min fee earned ${config.management.repeatDeployCooldownMinFeeEarnedPct}% | ${config.management.repeatDeployCooldownScope}`,
-    `Yield floor: ${config.management.minFeePerTvl24h}% | min age ${config.management.minAgeBeforeYieldCheck}m`,
-    `Screening: ${config.screening.category} / ${config.screening.timeframe} | TVL ${config.screening.minTvl}-${config.screening.maxTvl}`,
-    `Intervals: manage ${config.schedule.managementIntervalMin}m | screen ${config.schedule.screeningIntervalMin}m`,
-    `HiveMind: ${isHiveMindEnabled() ? "enabled" : "disabled"}${config.hiveMind.agentId ? ` | ${config.hiveMind.agentId}` : ""}`,
+    `⚙️ <b>Configuration</b>`,
+    ``,
+    `📊 Strategy: ${config.strategy.strategy} | bins ${config.strategy.minBinsBelow}-${config.strategy.maxBinsBelow}`,
+    `💰 Deploy: ${config.management.deployAmountSol} SOL | max ${config.risk.maxPositions} pos`,
+    ``,
+    `🎯 Exits: SL ${config.management.stopLossPct}% | TP ${config.management.takeProfitPct}%`,
+    `⏱️ Trailing TP: ${config.management.trailingTakeProfit ? "on" : "off"} (${config.management.trailingTriggerPct}% trigger, ${config.management.trailingDropPct}% drop)`,
+    `📍 OOR: ${config.management.outOfRangeWaitMinutes}m wait | ${config.management.oorCooldownTriggerCount}x / ${config.management.oorCooldownHours}h cooldown`,
+    ``,
+    `🔍 Screening: ${config.screening.category}/${config.screening.timeframe}`,
+    `💵 Yield floor: ${config.management.minFeePerTvl24h}% after ${config.management.minAgeBeforeYieldCheck}m`,
+    `⏲️ Schedule: manage ${config.schedule.managementIntervalMin}m | screen ${config.schedule.screeningIntervalMin}m`,
   ].join("\n");
 }
 
@@ -1025,6 +1126,7 @@ function parseConfigValue(raw) {
 
 function settingValue(key) {
   const values = {
+    dryRun: process.env.DRY_RUN === "true",
     solMode: config.management.solMode,
     lpAgentRelayEnabled: config.api.lpAgentRelayEnabled,
     chartIndicatorsEnabled: config.indicators.enabled,
@@ -1082,15 +1184,53 @@ function stepButtons(key, label, step, { digits = 2 } = {}) {
   ];
 }
 
+function renderMainMenu() {
+  const text = [
+    "<b>Meridian</b>",
+    "Tap a button, or use /help for the full command list.",
+  ].join("\n");
+  const keyboard = [
+    [settingButton("Status", "act:status"), settingButton("Positions", "act:positions")],
+    [settingButton("Screen", "act:screen"), settingButton("Candidates", "act:candidates")],
+    [settingButton("Briefing", "act:briefing"), settingButton("HiveMind", "act:hive")],
+    [settingButton("Settings", "act:settings"), settingButton("Help", "act:help")],
+    [settingButton("Pause", "act:pause"), settingButton("Resume", "act:resume")],
+  ];
+  return { text, keyboard };
+}
+
+async function showMainMenu({ messageId = null } = {}) {
+  const menu = renderMainMenu();
+  if (messageId) {
+    await editMessageWithButtons(menu.text, messageId, menu.keyboard);
+  } else {
+    await sendMessageWithButtons(menu.text, menu.keyboard);
+  }
+}
+
+// Quick-menu buttons map to the equivalent slash command and fall through
+// to the same handler logic below — one code path for typed and tapped commands.
+const MAIN_MENU_ACTIONS = {
+  "act:status": "/status",
+  "act:positions": "/positions",
+  "act:screen": "/screen",
+  "act:candidates": "/candidates",
+  "act:briefing": "/briefing",
+  "act:hive": "/hive",
+  "act:settings": "/settings",
+  "act:help": "/help",
+  "act:pause": "/pause",
+  "act:resume": "/resume",
+};
+
 function renderSettingsMenu(page = "main") {
-  const title = page === "main" ? "Settings menu" : `Settings: ${page}`;
+  const title = page === "main" ? "Settings" : `Settings · ${page}`;
   const summary = [
-    title,
-    "",
-    `Mode: ${config.management.solMode ? "SOL" : "USD"} | Relay: ${config.api.lpAgentRelayEnabled ? "on" : "off"}`,
-    `Strategy: ${config.strategy.strategy} | bins ${config.strategy.minBinsBelow}-${config.strategy.maxBinsBelow} | deploy ${config.management.deployAmountSol} SOL`,
-    `TP/SL: ${config.management.takeProfitPct}% / ${config.management.stopLossPct}% | trailing ${config.management.trailingTakeProfit ? "on" : "off"}`,
-    `Indicators: ${config.indicators.enabled ? "on" : "off"} | entry ${config.indicators.entryPreset} | ${fmtSettingValue(config.indicators.intervals)}`,
+    `<b>${title}</b>`,
+    `Mode: ${config.management.solMode ? "SOL" : "USD"} · Relay: ${config.api.lpAgentRelayEnabled ? "on" : "off"}`,
+    `Strategy: ${config.strategy.strategy} · bins ${config.strategy.minBinsBelow}-${config.strategy.maxBinsBelow} · deploy ${config.management.deployAmountSol} SOL`,
+    `TP/SL: ${config.management.takeProfitPct}% / ${config.management.stopLossPct}% · trailing ${config.management.trailingTakeProfit ? "on" : "off"}`,
+    `Indicators: ${config.indicators.enabled ? "on" : "off"} · entry ${config.indicators.entryPreset} · ${fmtSettingValue(config.indicators.intervals)}`,
   ].join("\n");
 
   const nav = [
@@ -1161,6 +1301,7 @@ function renderSettingsMenu(page = "main") {
     ];
   } else {
     rows = [
+      [toggleButton("dryRun", "Dry run")],
       [toggleButton("solMode", "SOL mode"), toggleButton("lpAgentRelayEnabled", "LPAgent relay")],
       [toggleButton("chartIndicatorsEnabled", "Chart indicators"), toggleButton("trailingTakeProfit", "Trailing TP")],
       [
@@ -1265,30 +1406,45 @@ async function applySettingsMenuCallback(msg) {
 }
 
 function formatHelpText() {
-  return [
-    "Telegram commands",
-    "",
-    "/help — show commands",
-    "/status — wallet + positions snapshot",
-    "/wallet — wallet, deploy amount, HiveMind status",
-    "/positions — list open positions",
-    "/pool <n> — detailed info for one open position",
-    "/close <n> — close one position by index",
-    "/closeall — close all open positions",
-    "/set <n> <note> — set note/instruction on position",
-    "/config — show important runtime config",
-    "/settings — button menu for common config",
-    "/setcfg <key> <value> — update persisted config",
-    "/screen — refresh deterministic candidate list",
-    "/candidates — show latest cached candidates",
-    "/deploy <n> — deploy candidate by cached index",
-    "/briefing — morning briefing",
-    "/hive — HiveMind sync status",
-    "/hive pull — manual HiveMind pull now",
-    "/pause — stop cron cycles",
-    "/resume — start cron cycles again",
-    "/stop — shut down agent",
-  ].join("\n");
+  const sections = [
+    ["📱 Quick start", [
+      ["/start", "main menu"],
+      ["/help", "show this list"],
+    ]],
+    ["📊 Status", [
+      ["/status", "wallet + positions"],
+      ["/wallet", "wallet + deploy info"],
+      ["/positions", "open positions"],
+      ["/pool &lt;n&gt;", "position details"],
+    ]],
+    ["📍 Control", [
+      ["/close &lt;n&gt;", "close position"],
+      ["/closeall", "close all"],
+      ["/set &lt;n&gt; &lt;note&gt;", "add instruction"],
+    ]],
+    ["⚙️ Config", [
+      ["/config", "runtime config"],
+      ["/settings", "button menu"],
+      ["/setcfg &lt;key&gt; &lt;val&gt;", "update config"],
+    ]],
+    ["🔍 Screening", [
+      ["/screen", "refresh candidates"],
+      ["/candidates", "show cached"],
+      ["/deploy &lt;n&gt;", "deploy candidate"],
+    ]],
+    ["🔧 Other", [
+      ["/briefing", "morning report"],
+      ["/hive", "HiveMind status"],
+      ["/hive pull", "manual pull"],
+      ["/pause", "pause cycles"],
+      ["/resume", "resume cycles"],
+      ["/stop", "shutdown"],
+    ]],
+  ];
+  const body = sections
+    .map(([title, cmds]) => `<b>${title}</b>\n` + cmds.map(([cmd, desc]) => `<code>${cmd}</code> — ${desc}`).join("\n"))
+    .join("\n\n");
+  return `💡 <b>Meridian Commands</b>\n\n${body}`;
 }
 
 async function runDeterministicScreen(limit = 5) {
@@ -1296,19 +1452,15 @@ async function runDeterministicScreen(limit = 5) {
   const candidates = (top?.candidates || top?.pools || []).slice(0, limit);
   setLatestCandidates(candidates);
   if (candidates.length > 0) {
-    const lines = candidates.map((pool, i) => {
-      const feeTvl = pool.fee_active_tvl_ratio ?? pool.fee_tvl_ratio ?? "?";
-      const vol = pool.volume_window ?? pool.volume_24h ?? "?";
-      return `${i + 1}. ${pool.name} | ${pool.pool}\n   fee/aTVL ${feeTvl}% | vol $${vol} | organic ${pool.organic_score ?? "?"}`;
-    });
-    return `Top candidates (${candidates.length})\n\n${lines.join("\n")}`;
+    const cards = candidates.map(formatCandidateCard);
+    return `🔍 <b>Top Candidates</b> · ${candidates.length}\n\n${cards.join("\n\n")}\n\n<code>/deploy n</code> to deploy`;
   }
   const examples = (top?.filtered_examples || []).slice(0, 3)
-    .map((entry) => `- ${entry.name}: ${entry.reason}`)
+    .map((entry) => `• ${escapeHtml(entry.name)}: ${escapeHtml(entry.reason)}`)
     .join("\n");
   return examples
-    ? `No candidates available.\nFiltered examples:\n${examples}`
-    : "No candidates available right now.";
+    ? `❌ <b>No candidates</b> passed the filters.\n\nFiltered out:\n${examples}`
+    : "❌ <b>No candidates</b> available right now.";
 }
 
 async function deployLatestCandidate(index) {
@@ -1388,7 +1540,7 @@ async function drainTelegramQueue() {
 }
 
 async function telegramHandler(msg) {
-  const text = msg?.text?.trim();
+  let text = msg?.text?.trim();
   if (!text) return;
   if (msg?.isCallback && text.startsWith("cfg:")) {
     try {
@@ -1396,6 +1548,14 @@ async function telegramHandler(msg) {
     } catch (e) {
       await answerCallbackQuery(msg.callbackQueryId, e.message).catch(() => {});
     }
+    return;
+  }
+  if (msg?.isCallback && text.startsWith("act:")) {
+    await answerCallbackQuery(msg.callbackQueryId).catch(() => {});
+    text = MAIN_MENU_ACTIONS[text] || text;
+  }
+  if (text === "/start") {
+    await showMainMenu().catch((e) => sendMessage(`Menu error: ${e.message}`).catch(() => {}));
     return;
   }
   if (text === "/settings" || text === "/menu" || text === "/configmenu") {
@@ -1423,7 +1583,7 @@ async function telegramHandler(msg) {
   }
 
   if (text === "/help") {
-    await sendMessage(formatHelpText()).catch(() => {});
+    await sendHTML(formatHelpText()).catch(() => {});
     return;
   }
 
@@ -1433,7 +1593,7 @@ async function telegramHandler(msg) {
       const suffix = text === "/status" && positions.total_positions
         ? `\n\nUse /positions for the numbered list.`
         : "";
-      await sendMessage(`${formatWalletStatus(wallet, positions)}${suffix}`).catch(() => {});
+      await sendHTML(`${formatWalletStatus(wallet, positions)}${suffix}`).catch(() => {});
     } catch (e) {
       await sendMessage(`Error: ${e.message}`).catch(() => {});
     }
@@ -1441,7 +1601,7 @@ async function telegramHandler(msg) {
   }
 
   if (text === "/config") {
-    await sendMessage(formatConfigSnapshot()).catch(() => {});
+    await sendHTML(formatConfigSnapshot()).catch(() => {});
     return;
   }
 
@@ -1450,13 +1610,24 @@ async function telegramHandler(msg) {
       const { positions, total_positions } = await getMyPositions({ force: true });
       if (total_positions === 0) { await sendMessage("No open positions."); return; }
       const cur = config.management.solMode ? "◎" : "$";
-      const lines = positions.map((p, i) => {
-        const pnl = p.pnl_usd >= 0 ? `+${cur}${p.pnl_usd}` : `-${cur}${Math.abs(p.pnl_usd)}`;
-        const age = p.age_minutes != null ? `${p.age_minutes}m` : "?";
-        const oor = !p.in_range ? " ⚠️OOR" : "";
-        return `${i + 1}. ${p.pair} | ${cur}${p.total_value_usd} | PnL: ${pnl} | fees: ${cur}${p.unclaimed_fees_usd} | ${age}${oor}`;
+      const totalValue = positions.reduce((sum, p) => sum + (p.total_value_usd || 0), 0);
+      const totalPnl = positions.reduce((sum, p) => sum + (p.pnl_usd || 0), 0);
+      const sign = (n) => (n >= 0 ? "+" : "-");
+      const cards = positions.map((p, i) => {
+        const pnlPct = p.pnl_pct != null ? ` (${sign(p.pnl_pct)}${Math.abs(p.pnl_pct)}%)` : "";
+        const status = p.in_range ? "🟢 in" : `🔴 OOR ${formatAge(p.minutes_out_of_range)}`;
+        const yieldStr = p.fee_per_tvl_24h != null ? `${p.fee_per_tvl_24h}%/d` : "?";
+        return [
+          `${i + 1}. <b>${escapeHtml(p.pair)}</b> ${status}`,
+          `   ${cur}${p.total_value_usd} | PnL ${sign(p.pnl_usd)}${cur}${Math.abs(p.pnl_usd)}${pnlPct}`,
+          `   fee ${cur}${p.unclaimed_fees_usd} | yield ${yieldStr} | ${formatAge(p.age_minutes)}`,
+        ].join("\n");
       });
-      await sendMessage(`📊 Open Positions (${total_positions}):\n\n${lines.join("\n")}\n\n/close <n> to close | /set <n> <note> to set instruction`);
+      const header = [
+        `📊 <b>Open Positions</b> · ${total_positions}/${config.risk.maxPositions}`,
+        `Total: ${cur}${Math.round(totalValue * 100) / 100} | PnL: ${sign(totalPnl)}${cur}${Math.round(Math.abs(totalPnl) * 100) / 100}`,
+      ].join("\n");
+      await sendHTML(`${header}\n\n${cards.join("\n\n")}\n\n<code>/close n</code> to close | <code>/set n note</code> to add note`);
     } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
     return;
   }
@@ -1468,15 +1639,19 @@ async function telegramHandler(msg) {
       const { positions } = await getMyPositions({ force: true });
       if (idx < 0 || idx >= positions.length) { await sendMessage("Invalid number. Use /positions first."); return; }
       const pos = positions[idx];
-      await sendMessage([
-        `${idx + 1}. ${pos.pair}`,
-        `Pool: ${pos.pool}`,
-        `Position: ${pos.position}`,
-        `Range: ${pos.lower_bin} → ${pos.upper_bin} | active ${pos.active_bin}`,
-        `PnL: ${pos.pnl_pct ?? "?"}% | fees: ${config.management.solMode ? "◎" : "$"}${pos.unclaimed_fees_usd ?? "?"}`,
-        `Value: ${config.management.solMode ? "◎" : "$"}${pos.total_value_usd ?? "?"}`,
-        `Age: ${pos.age_minutes ?? "?"}m | ${pos.in_range ? "IN RANGE" : `OOR ${pos.minutes_out_of_range ?? 0}m`}`,
-        pos.instruction ? `Note: ${pos.instruction}` : null,
+      const cur = config.management.solMode ? "◎" : "$";
+      const status = pos.in_range ? "🟢 in range" : `🔴 OOR`;
+      const instruction = pos.instruction ? `\n📝 Note: ${escapeHtml(pos.instruction)}` : "";
+      await sendHTML([
+        `<b>${idx + 1}. ${escapeHtml(pos.pair)}</b> ${status}`,
+        ``,
+        `💰 Value: ${cur}${pos.total_value_usd ?? "?"} | PnL: ${pos.pnl_pct ?? "?"}%`,
+        `💵 Fees: ${cur}${pos.unclaimed_fees_usd ?? "?"} | Age: ${formatAge(pos.age_minutes)}`,
+        ``,
+        `📍 Pool: <code>${escapeHtml(pos.pool)}</code>`,
+        `📌 Position: <code>${escapeHtml(pos.position)}</code>`,
+        `📊 Range: ${pos.lower_bin}→${pos.upper_bin} (active bin ${pos.active_bin})`,
+        instruction,
       ].filter(Boolean).join("\n"));
     } catch (e) {
       await sendMessage(`Error: ${e.message}`).catch(() => {});
@@ -1491,14 +1666,15 @@ async function telegramHandler(msg) {
       const { positions } = await getMyPositions({ force: true });
       if (idx < 0 || idx >= positions.length) { await sendMessage("Invalid number. Use /positions first."); return; }
       const pos = positions[idx];
-      await sendMessage(`Closing ${pos.pair}...`);
+      await sendMessage(`Closing ${pos.pair}…`);
       const result = await closePosition({ position_address: pos.position });
+      const cur = config.management.solMode ? "◎" : "$";
       if (result.success) {
         const closeTxs = result.close_txs?.length ? result.close_txs : result.txs;
-        const claimNote = result.claim_txs?.length ? `\nClaim txs: ${result.claim_txs.join(", ")}` : "";
-        await sendMessage(`✅ Closed ${pos.pair}\nPnL: ${config.management.solMode ? "◎" : "$"}${result.pnl_usd ?? "?"} | close txs: ${closeTxs?.join(", ") || "n/a"}${claimNote}`);
+        const claimNote = result.claim_txs?.length ? `\nClaim tx: <code>${escapeHtml(result.claim_txs[0])}</code>` : "";
+        await sendHTML(`✅ <b>Closed</b> ${escapeHtml(pos.pair)} — PnL ${cur}${result.pnl_usd ?? "?"}\nTx: <code>${escapeHtml(closeTxs?.[0] || "n/a")}</code>${claimNote}`);
       } else {
-        await sendMessage(`❌ Close failed: ${JSON.stringify(result)}`);
+        await sendHTML(`❌ <b>Close failed</b> — ${escapeHtml(result.error || "unknown error")}`);
       }
     } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
     return;
@@ -1513,12 +1689,12 @@ async function telegramHandler(msg) {
       for (const pos of positions) {
         try {
           const result = await closePosition({ position_address: pos.position });
-          results.push(`${pos.pair}: ${result.success ? "closed" : `failed (${result.error || "unknown"})`}`);
+          results.push(result.success ? `✅ ${escapeHtml(pos.pair)}: closed` : `❌ ${escapeHtml(pos.pair)}: ${escapeHtml(result.error || "failed")}`);
         } catch (error) {
-          results.push(`${pos.pair}: failed (${error.message})`);
+          results.push(`❌ ${escapeHtml(pos.pair)}: ${escapeHtml(error.message)}`);
         }
       }
-      await sendMessage(`Close-all finished.\n\n${results.join("\n")}`).catch(() => {});
+      await sendHTML(`<b>Close-all finished</b>\n\n${results.join("\n")}`).catch(() => {});
     } catch (e) {
       await sendMessage(`Error: ${e.message}`).catch(() => {});
     }
@@ -1534,7 +1710,7 @@ async function telegramHandler(msg) {
       if (idx < 0 || idx >= positions.length) { await sendMessage("Invalid number. Use /positions first."); return; }
       const pos = positions[idx];
       setPositionInstruction(pos.position, note);
-      await sendMessage(`✅ Note set for ${pos.pair}:\n"${note}"`);
+      await sendHTML(`✅ <b>Note set</b> for ${escapeHtml(pos.pair)} — "${escapeHtml(note)}"`);
     } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
     return;
   }
@@ -1549,10 +1725,10 @@ async function telegramHandler(msg) {
         reason: "Telegram slash command /setcfg",
       });
       if (!result?.success) {
-        await sendMessage(`Config update failed.\nUnknown: ${(result?.unknown || []).join(", ") || "none"}`).catch(() => {});
+        await sendHTML(`❌ <b>Config update failed</b> — unknown key: ${escapeHtml((result?.unknown || []).join(", ") || "none")}`).catch(() => {});
         return;
       }
-      await sendMessage(`✅ Updated ${key} = ${JSON.stringify(value)}`).catch(() => {});
+      await sendHTML(`✅ Updated <code>${escapeHtml(key)}</code> = <code>${escapeHtml(JSON.stringify(value))}</code>`).catch(() => {});
     } catch (e) {
       await sendMessage(`Error: ${e.message}`).catch(() => {});
     }
@@ -1561,7 +1737,7 @@ async function telegramHandler(msg) {
 
   if (text === "/screen") {
     try {
-      await sendMessage(await runDeterministicScreen(5)).catch(() => {});
+      await sendHTML(await runDeterministicScreen(5)).catch(() => {});
     } catch (e) {
       await sendMessage(`Error: ${e.message}`).catch(() => {});
     }
@@ -1569,7 +1745,7 @@ async function telegramHandler(msg) {
   }
 
   if (text === "/candidates") {
-    await sendMessage(describeLatestCandidates(5)).catch(() => {});
+    await sendHTML(describeLatestCandidates(5)).catch(() => {});
     return;
   }
 
@@ -1578,16 +1754,14 @@ async function telegramHandler(msg) {
     try {
       const idx = parseInt(deployMatch[1]) - 1;
       const { candidate, result, deployAmount, binsBelow } = await deployLatestCandidate(idx);
-      const coverage = result.range_coverage
-        ? `Range: ${fmtPct(result.range_coverage.downside_pct)} downside | ${fmtPct(result.range_coverage.upside_pct)} upside`
-        : `Strategy: ${config.strategy.strategy} | binsBelow: ${binsBelow}`;
-      await sendMessage([
-        `✅ Deployed ${candidate.name}`,
-        `Pool: ${candidate.pool}`,
-        `Amount: ${deployAmount} SOL`,
-        coverage,
-        `Position: ${result.position || "n/a"}`,
-        result.txs?.length ? `Tx: ${result.txs[0]}` : null,
+      const posShort = result.position?.slice(0, 8);
+      const txShort = result.txs?.[0]?.slice(0, 16);
+      const rangeLine = result.range_coverage
+        ? `${fmtPct(result.range_coverage.downside_pct)}↓ ${fmtPct(result.range_coverage.upside_pct)}↑`
+        : `${config.strategy.strategy} | ${binsBelow}b`;
+      await sendHTML([
+        `✅ <b>${escapeHtml(candidate.name)}</b> | ${deployAmount} SOL | ${rangeLine}`,
+        `Pos: <code>${posShort}...</code> | Tx: <code>${txShort}...</code>`,
       ].filter(Boolean).join("\n")).catch(() => {});
     } catch (e) {
       await sendMessage(`Error: ${e.message}`).catch(() => {});
@@ -1598,7 +1772,7 @@ async function telegramHandler(msg) {
   if (text === "/pause") {
     stopCronJobs();
     cronStarted = false;
-    await sendMessage("⏸ Paused autonomous cycles. Telegram control still works. Use /resume to start again.").catch(() => {});
+    await sendHTML("⏸️ <b>Paused</b> autonomous cycles | Telegram control still works").catch(() => {});
     return;
   }
 
@@ -1608,9 +1782,9 @@ async function telegramHandler(msg) {
       timers.managementLastRun = Date.now();
       timers.screeningLastRun = Date.now();
       startCronJobs();
-      await sendMessage("▶️ Autonomous cycles resumed.").catch(() => {});
+      await sendHTML("▶️ <b>Resumed</b> autonomous cycles").catch(() => {});
     } else {
-      await sendMessage("Autonomous cycles are already running.").catch(() => {});
+      await sendMessage("✓ Already running").catch(() => {});
     }
     return;
   }
@@ -1620,7 +1794,7 @@ async function telegramHandler(msg) {
       const enabled = isHiveMindEnabled();
       const agentId = ensureAgentId();
       if (!enabled) {
-        await sendMessage(`HiveMind: disabled\nAgent ID: ${agentId}\nSet hiveMindApiKey to connect.`).catch(() => {});
+        await sendHTML(`<b>HiveMind</b>: disabled\nAgent ID: <code>${escapeHtml(agentId)}</code>\nSet hiveMindApiKey to connect.`).catch(() => {});
         return;
       }
       const isManualPull = text === "/hive pull";
@@ -1630,16 +1804,12 @@ async function telegramHandler(msg) {
         (pullMode === "auto" || isManualPull) ? pullHiveMindLessons(12) : Promise.resolve(null),
         (pullMode === "auto" || isManualPull) ? pullHiveMindPresets() : Promise.resolve(null),
       ]);
-      await sendMessage([
-        "HiveMind: enabled",
-        `Agent ID: ${agentId}`,
-        `URL: ${config.hiveMind.url}`,
-        `Pull mode: ${pullMode}`,
-        `Register: ${registerResult ? "ok" : "warn"}`,
-        `Shared lessons: ${Array.isArray(lessons) ? lessons.length : (pullMode === "manual" ? "manual" : 0)}`,
-        `Presets: ${Array.isArray(presets) ? presets.length : (pullMode === "manual" ? "manual" : 0)}`,
-        isManualPull ? "Manual pull: completed" : null,
-      ].join("\n")).catch(() => {});
+      await sendHTML([
+        `🧠 <b>HiveMind</b>`,
+        `Enabled · ${pullMode} pull | Lessons ${Array.isArray(lessons) ? lessons.length : "?"} | Presets ${Array.isArray(presets) ? presets.length : "?"}`,
+        `Agent: <code>${escapeHtml(agentId)}</code>`,
+        isManualPull ? "✅ Manual pull completed" : null,
+      ].filter(Boolean).join("\n")).catch(() => {});
     } catch (e) {
       await sendMessage(`HiveMind error: ${e.message}`).catch(() => {});
     }
@@ -1654,7 +1824,7 @@ async function telegramHandler(msg) {
     const isDeployRequest = !hasCloseIntent && /\bdeploy\b|\bopen position\b|\blp into\b|\badd liquidity\b/i.test(text);
     const agentRole = isDeployRequest ? "SCREENER" : "GENERAL";
     const agentModel = agentRole === "SCREENER" ? config.llm.screeningModel : config.llm.generalModel;
-    liveMessage = await createLiveMessage("🤖 Live Update", `Request: ${text.slice(0, 240)}`);
+    liveMessage = await createLiveMessage("Live Update", `Request: ${text.slice(0, 240)}`);
     const { content } = await agentLoop(text, config.llm.maxSteps, sessionHistory, agentRole, agentModel, null, {
       interactive: true,
       onToolStart: async ({ name }) => { await liveMessage?.toolStart(name); },
@@ -1664,8 +1834,12 @@ async function telegramHandler(msg) {
     if (liveMessage) await liveMessage.finalize(stripThink(content));
     else await sendMessage(stripThink(content));
   } catch (e) {
-    if (liveMessage) await liveMessage.fail(e.message).catch(() => {});
-    else await sendMessage(`Error: ${e.message}`).catch(() => {});
+    log("telegram_error", `Error handling Telegram message: ${e.message}\n${e.stack}`);
+    const errorMsg = e.message?.includes("Agent initialization")
+      ? "Agent system error (state may be corrupted). Attempting recovery..."
+      : e.message || "Unknown error";
+    if (liveMessage) await liveMessage.fail(errorMsg).catch(() => {});
+    else await sendMessage(`Error: ${errorMsg}`).catch(() => {});
   } finally {
     busy = false;
     refreshPrompt();

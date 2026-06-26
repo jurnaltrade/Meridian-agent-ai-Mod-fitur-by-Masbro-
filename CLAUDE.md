@@ -12,7 +12,7 @@ Autonomous DLMM liquidity provider agent for Meteora pools on Solana.
 ## TL;DR (read this first)
 
 - **What it is**: Node 22+ ESM service that runs an LLM-driven loop
-  (OpenAI-compatible) to screen Meteora DLMM pools, deploy SOL into
+  (calls Claude directly via `@anthropic-ai/sdk`) to screen Meteora DLMM pools, deploy SOL into
   long/short positions, monitor them, and close them — all without a human
   in the loop. Telegram + Discord provide ops surface; HiveMind provides
   shared learning.
@@ -81,7 +81,7 @@ Autonomous DLMM liquidity provider agent for Meteora pools on Solana.
 |---|---:|---|
 | **Entry / orchestration** | | |
 | `index.js` | ~2016 | Daemon. Cron, REPL, Telegram bot, briefing, HiveMind bootstrap, PnL poller, deterministic close rules, single-candidate skip rule, settings menu. **All** automatic cycles start here. |
-| `agent.js` | 416 | `agentLoop(goal, maxSteps, history, agentType, model, maxOut, opts)`. The ReAct loop. Provider fallback, JSON repair, once-per-session tool locks, no-tool retries, `onToolStart`/`onToolFinish` callbacks for live Telegram messages. |
+| `agent.js` | 416 | `agentLoop(goal, maxSteps, history, agentType, model, maxOut, opts)`. The ReAct loop. Calls Claude directly via `@anthropic-ai/sdk` (Messages API — `system` is a top-level field, tool results are `tool_result` blocks in a `user` message, no OpenAI-style `tool` role). Bounded retry on 429/500/529, once-per-session tool locks, no-tool retries, `onToolStart`/`onToolFinish` callbacks for live Telegram messages. |
 | `cli.js` | 676 | One-shot CLI; every tool exposed as a subcommand. Also writes a `~/.meridian/SKILL.md` at startup for agent discovery. Loads `.env`/`user-config.json` from `~/.meridian/` if present, else from cwd. |
 | `setup.js` | ~750 | Interactive first-run wizard. Three presets (degen/moderate/safe) + custom. Covers strategy, screening filters, position sizing, trailing TP, per-role models. |
 | **Config & state** | | |
@@ -92,7 +92,7 @@ Autonomous DLMM liquidity provider agent for Meteora pools on Solana.
 | `tools/executor.js` | 844 | `executeTool(name, args)`. Pre-flight safety checks for `PROTECTED_TOOLS = {deploy, claim, close, swap, self_update}`. Validates pool thresholds via fresh pool discovery call before deploy. Post-tool side-effects: telegram notifications, pool-memory auto-annotation on `low yield` close, auto-swap base→SOL on close. |
 | `tools/dlmm.js` | huge | Meteora DLMM SDK wrapper. **Lazy-loads** `@meteora-ag/dlmm` to avoid CJS-import-time crash in DRY_RUN/test. Pool cache (5 min), metadata cache (15 min), positions cache (5 min TTL + inflight dedup). `deployPosition`, `getMyPositions`, `getPositionPnl`, `getActiveBin`, `closePosition`, `claimFees`, `searchPools`, `getWalletPositions`, `addLiquidity`, `withdrawLiquidity`. Also has relay-mode (zap-in via LPAgent) and wide-range path (multi-tx `createExtendedEmptyPosition` + `addLiquidityByStrategyChunkable` for >69 bin ranges). Asserts Meteora bin-array initialization rent never charged. |
 | `tools/screening.js` | 862 | `discoverPools`, `getTopCandidates` (hard filter + enrich + score), `getPoolDetail`. Scoring = `fee_tvl*1000 + organic*10 + vol/100 + holders/100`. Has Discord signal merge/only modes, PVP-rival detection. |
-| `tools/wallet.js` | 251 | `getWalletBalances` (Helius), `swapToken` (Jupiter Swap V2). `normalizeMint` collapses "SOL"/"native"/any So1-prefixed token to wrapped-SOL. Built-in referral: 50 bps to a fixed address (configurable). |
+| `tools/wallet.js` | 251 | `getWalletBalances` (provider-agnostic: reads `RPC_URL` via standard `getBalance`/`getParsedTokenAccountsByOwner` for both Token and Token-2022 programs, prices via Jupiter assets-search), `swapToken` (Jupiter Swap V2). `normalizeMint` collapses "SOL"/"native"/any So1-prefixed token to wrapped-SOL. Built-in referral: 50 bps to a fixed address (configurable). |
 | `tools/token.js` | 209 | `getTokenInfo` (Jupiter datapi), `getTokenHolders` (top 100 + filter pool-tagged), `getTokenNarrative` (Jupiter ChainInsight). Cross-references smart wallets from `smart-wallets.json`. |
 | `tools/study.js` | 152 | `studyTopLPers` → Agent Meridian `/top-lp` + `/study-top-lp`. Returns ranked LPer patterns (avg hold, win rate, preferred strategy). |
 | `tools/agent-meridian.js` | 110 | `agentMeridianJson(path, opts)` with retry/backoff. Default base = `https://api.agentmeridian.xyz/api`. |
@@ -171,7 +171,7 @@ Cron tasks created by `startCronJobs()`:
 | Health check | `0 * * * *` | One-shot `agentLoop` as MANAGER with health summary goal |
 | Briefing | `0 1 * * *` (UTC) | `runBriefing()` — 8 AM Jakarta |
 | Briefing watchdog | `0 */6 * * *` (UTC) | `maybeRunMissedBriefing()` — fires on startup if missed |
-| **PnL poller** | every 30s (`setInterval`) | Trailing-TP detection between management cycles (below) |
+| **PnL poller** | every 3s (`setInterval`, configurable via `config.pnl.pollIntervalSec`) | Real-time exit detection: trailing-TP, stop-loss, OOR, low-yield. Closes directly when rule triggers — no waiting for next management cycle. Confirmation: `confirmTicks` (default 2 = ~6s; set to 1 for ~3s closes) |
 
 **Race condition guards** (all in `index.js`):
 - `_managementBusy` / `_screeningBusy` flags prevent overlap.
@@ -204,11 +204,11 @@ The management cycle is **mostly deterministic in JS, LLM only for the hard case
 ### The screening cycle (multi-stage pipeline)
 
 1. **Pre-checks**: `getMyPositions` + `getWalletBalances` in parallel. Skip if at `maxPositions` or `balance.sol < deployAmountSol + gasReserve`. Each skip writes a `decision-log` entry.
-2. **Top candidates**: `getTopCandidates({limit: 10})` — applies ALL hard filters (TVL, fee/TVL, volatility, organic, holders, mcap, bin step, launchpad allow/block, token age, cooldowns, base mints already in use, dev blocklist), optional indicator confirmation, **and** PVP-rival detection (default: warn; `blockPvpSymbols: true` → hard filter).
+2. **Top candidates**: `getTopCandidates({limit: 10})` — applies ALL hard filters (TVL, fee/TVL, volatility, organic, holders, mcap, bin step, launchpad allow/block, token age, base mints already in use, dev blocklist), optional indicator confirmation, **and** PVP-rival detection (default: warn; `blockPvpSymbols: true` → hard filter). Cooldowns (pool/token) are filtered too, but not unconditionally — see the cooldown-exception note below.
 3. **Sequential recon** with 150ms throttle (avoid 429s): `getActiveBin`, `checkSmartWalletsOnPool`, `getTokenNarrative`, `getTokenInfo` per candidate.
 4. **Hard filters after recon**: launchpad allow/block, `bot_holders_pct > maxBotHoldersPct`.
 5. **If 0 pass**: write `no_deploy` decision with `rejected[]` and return `⛔ NO DEPLOY` report.
-6. **If 1 pass**: `getLoneCandidateSkipReason()` (smart-wallet absence, no narrative, PVP conflict, etc.) — if skipped, write `no_deploy` decision.
+6. **If 1 pass**: `getLoneCandidateSkipReason()` evaluates conviction. A solo deploy passes if: (a) **strong narrative** OR (b) **high Degen Score** (≥50, default). Smart wallets are now a confidence boost, not a gate — absence alone doesn't block. PVP conflict still blocks unless degen is strong. If skipped, write `no_deploy` decision.
 7. **Stage signals** for Darwinian attribution.
 8. **Compact candidate blocks** built in `index.js:543`.
 9. **LLM** gets the blocks + active strategy + balance + computed deploy amount + bins_below formula. The LLM is *forced* via `tool_choice: "required"` on step 0.
@@ -245,6 +245,7 @@ auto-swap on close (executor.js:610)
    ├─ only if !skip_swap && result.base_mint
    ├─ get wallet balance, find base token
    ├─ if usd >= 0.10 → swapToken back to SOL
+   ├─ Jupiter failures retry 3x with exponential backoff — no stranded tokens
    └─ result.auto_swapped = true + auto_swap_note (so LLM doesn't double-swap)
 ```
 
@@ -257,6 +258,8 @@ auto-swap on close (executor.js:610)
 - `oorCooldownTriggerCount` (default 3) consecutive OOR closes → `oorCooldownHours` (default 12h) cooldown on **both pool and base mint**.
 - Optional repeat-deploy cooldown: `repeatDeployCooldownTriggerCount` (default 3) fee-generating deploys in a row → pool+token cooldown (configurable scope).
 - All checked by `isPoolOnCooldown` / `isBaseMintOnCooldown` in `getTopCandidates` and `deployPosition`.
+
+**Cooldown exception** (`tools/screening.js#getTopCandidates`): a pool/token that's on cooldown but otherwise passes every fundamental filter (TVL, fee/TVL, volatility, not already held) isn't dropped outright — it's held in `cooldownCandidates` and re-checked once normal (non-cooldown) candidates are filled up to `limit`. It's only let through if `config.indicators.enabled` **and** `confirmIndicatorPreset({..., requireAll: true})` confirms on *every* configured interval (stricter than the normal entry gate, which respects `requireAllIntervals` and may pass on just one). A disabled indicator system, an unavailable indicator API (`skipped: true`), or a non-unanimous result all deny the exception — cooldown is the default, the override is the rare case. Granted exceptions are tagged `pool.cooldown_override` / `cooldown_override_reason`, surfaced to the SCREENER LLM as a `⚠️ COOLDOWN OVERRIDE` line in the candidate block (`index.js` candidateBlocks), and recorded into the staged Darwinian signal snapshot so a deploy made this way is traceable later in `state.json`.
 
 ---
 
@@ -302,6 +305,7 @@ All persistent files are loaded/saved on each call — no in-memory caching laye
 | `api` | `url`, `publicApiKey`, `lpAgentRelayEnabled` | `https://api.agentmeridian.xyz/api`, built-in key, false |
 | `jupiter` | `apiKey`, `referralAccount`, `referralFeeBps` | env override, fixed referral, 50 bps |
 | `indicators` | `enabled`, `entryPreset`, `exitPreset`, `rsiLength`, `intervals`, `candles`, `rsiOversold`, `rsiOverbought`, `requireAllIntervals` | false, supertrend_break, supertrend_break, 2, ["5_MINUTE"], 298, 30, 80, false |
+| `pnl` | `pollIntervalSec`, `confirmTicks` | 3, 2 |
 
 `update_config` (executor.js:333) uses a flat-key `CONFIG_MAP` (50+ entries) that knows how to (a) coerce booleans/arrays/strings/numbers, (b) clamp `binsBelow*` to `MIN_SAFE_BINS_BELOW=35`, (c) restart cron if `managementIntervalMin` / `screeningIntervalMin` changed, (d) write a `[SELF-TUNED]` lesson.
 
@@ -316,11 +320,9 @@ All persistent files are loaded/saved on each call — no in-memory caching laye
 | Var | Required | Purpose |
 |---|---|---|
 | `WALLET_PRIVATE_KEY` | yes | Base58 (or JSON array) |
-| `RPC_URL` | yes | Solana RPC. Helius recommended. |
-| `OPENROUTER_API_KEY` (or `LLM_API_KEY`) | yes | LLM provider key. |
-| `LLM_BASE_URL` | no | Override for any OpenAI-compatible endpoint (LM Studio: `http://localhost:1234/v1`). |
-| `LLM_MODEL` | no | Default model. Per-role models in `user-config.json` override. |
-| `HELIUS_API_KEY` | recommended | Wallet balance lookups via Helius. |
+| `RPC_URL` | yes | Solana RPC (any provider — Helius, QuickNode, etc.). Used directly for wallet balance lookups (`getBalance`/`getParsedTokenAccountsByOwner`), no vendor-specific API needed. |
+| `ANTHROPIC_API_KEY` (or `LLM_API_KEY`, or `OPENROUTER_API_KEY` as a last-resort fallback name) | yes | Anthropic API key. `agent.js` checks `ANTHROPIC_API_KEY` first, falling back to `LLM_API_KEY`, then `OPENROUTER_API_KEY` — so a key already sitting under the legacy `OPENROUTER_API_KEY` name still works without renaming. |
+| `LLM_MODEL` | no | Default Claude model ID (e.g. `claude-sonnet-4-6`, `claude-opus-4-8` — no provider prefix, dashes not dots). Per-role models in `user-config.json` override. |
 | `LPAGENT_API_KEY` | optional | Direct LPAgent positions fetch fallback. |
 | `JUPITER_API_KEY` | optional | Better rate limit on Jupiter Swap. Default key baked in. |
 | `TELEGRAM_BOT_TOKEN` | no | Notifications + REPL. |
@@ -402,7 +404,7 @@ Standalone process — `cd discord-listener && npm install && npm start`. Shares
 - **`get_wallet_positions` tool** is in `definitions.js` and wired in `executor.js`, but not in `MANAGER_TOOLS`/`SCREENER_TOOLS`. Only `INTENT_TOOLS.balance` / `INTENT_TOOLS.positions` expose it to GENERAL.
 - **Lazy SDK load** (`tools/dlmm.js:33`) — `@meteora-ag/dlmm` is dynamic-imported on first on-chain call to avoid CJS-import crash on Node 24 (the `postinstall` `patch-anchor.js` handles another piece of this). Don't `import` it eagerly at top of file.
 - **Position cache** (`_positionsCache` 5min TTL) — in single-process mode it's a perf win, but the cache is invalidated by `_positionsCacheAt = 0` after every deploy/close, and the executor's `deploy_position` safety check uses `force: true` for a fresh count.
-- **PnL sanity check** (`pnlSanityMaxDiffPct`, default 5%) — if reported vs derived pnl_pct differ by more than this, the LLM is told not to trust that tick. Implemented in `dlmm.js` getMyPositions and `state.js` updatePnlAndCheckExits.
+- **PnL sanity check** (`pnlSanityMaxDiffPct`, default 5%) — if reported vs derived pnl_pct differ by more than this, the LLM is told not to trust that tick. **FIXED:** was wrongly blocking exit rules (stop-loss, trailing-TP, OOR) on volatile pools — positions could sit past their rules. Now correctly limited to warning only; exits always trigger. Implemented in `dlmm.js` getMyPositions and `state.js` updatePnlAndCheckExits.
 - **DRY_RUN auto-skip SOL balance check** — `runSafetyChecks` for `deploy_position` only checks `balance.sol < amountY + gasReserve` if `DRY_RUN !== "true"`.
 - **HiveMind disable path is murky** — README says "there is currently no empty-string disable path" for HiveMind. `config.hiveMind.url/apiKey` fall back to defaults if blank. Set `pullMode: "manual"` to suppress auto-pull.
 - **Selfbot in `discord-listener/`** is a ToS gray area. Make sure operators know.

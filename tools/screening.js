@@ -607,6 +607,11 @@ export async function getTopCandidates({ limit = 10 } = {}) {
   const maxTvl = config.screening.maxTvl == null ? null : Number(config.screening.maxTvl);
   const minFeeActiveTvlRatio = Number(config.screening.minFeeActiveTvlRatio ?? 0);
 
+  // Fundamentals-passing pools that are blocked only by a pool/token cooldown — held
+  // back here (not hard-rejected) so they can be re-checked for a high-conviction
+  // indicator exception further down, instead of being dropped outright.
+  const cooldownCandidates = [];
+
   const eligible = pools
     .filter((p) => {
       const tvl = Number(p.tvl ?? p.active_tvl ?? 0);
@@ -635,14 +640,12 @@ export async function getTopCandidates({ limit = 10 } = {}) {
         pushFilteredReason(filteredOut, p, "already holding this base token in another pool");
         return false;
       }
-      if (isPoolOnCooldown(p.pool)) {
-        log("screening", `Filtered cooldown pool ${p.name} (${p.pool.slice(0, 8)})`);
-        pushFilteredReason(filteredOut, p, "pool cooldown active");
-        return false;
-      }
-      if (isBaseMintOnCooldown(p.base?.mint)) {
-        log("screening", `Filtered cooldown token ${p.base?.symbol} (${p.base?.mint?.slice(0, 8)})`);
-        pushFilteredReason(filteredOut, p, "token cooldown active");
+      const poolCooldown = isPoolOnCooldown(p.pool);
+      const mintCooldown = !poolCooldown && isBaseMintOnCooldown(p.base?.mint);
+      if (poolCooldown || mintCooldown) {
+        p._cooldownReason = poolCooldown ? "pool cooldown active" : "token cooldown active";
+        log("screening", `On cooldown (${p._cooldownReason}): ${p.name} (${p.pool.slice(0, 8)}) — checking indicator exception`);
+        cooldownCandidates.push(p);
         return false;
       }
       return true;
@@ -714,6 +717,41 @@ export async function getTopCandidates({ limit = 10 } = {}) {
     eligible.splice(0, eligible.length, ...confirmedEligible);
     if (eligible.length < before) {
       log("screening", `Indicator confirmation removed ${before - eligible.length} candidate(s)`);
+    }
+  }
+
+  // Cooldown exception: a fundamentals-passing pool/token still on cooldown can be deployed
+  // anyway if conviction is high enough to outweigh the cooldown — but the bar is strict
+  // (every configured interval must confirm, not just one, regardless of requireAllIntervals)
+  // and there must be a *real* indicator system backing it. If chart indicators are disabled,
+  // or the API is unavailable for a candidate (skipped), no exception is granted — a cooldown
+  // is the default, conviction is the exception, not the other way around.
+  if (config.indicators.enabled && cooldownCandidates.length > 0 && eligible.length < limit) {
+    const ranked = cooldownCandidates.sort((a, b) => scoreCandidate(b) - scoreCandidate(a));
+    for (const pool of ranked) {
+      if (eligible.length >= limit) break;
+      const confirmation = await confirmIndicatorPreset({ mint: pool.base?.mint, side: "entry", requireAll: true }).catch((error) => ({
+        enabled: true,
+        confirmed: false,
+        skipped: true,
+        reason: `Indicator confirmation unavailable: ${error.message}`,
+        intervals: [],
+      }));
+      const strongConviction = confirmation.enabled && confirmation.confirmed && !confirmation.skipped;
+      if (!strongConviction) {
+        pushFilteredReason(filteredOut, pool, `${pool._cooldownReason} — exception denied (${confirmation.reason})`);
+        log("screening", `Cooldown exception denied for ${pool.name} (${pool.pool.slice(0, 8)}): ${confirmation.reason}`);
+        continue;
+      }
+      pool.indicator_confirmation = confirmation;
+      pool.cooldown_override = true;
+      pool.cooldown_override_reason = `${pool._cooldownReason}, overridden — ${confirmation.reason} (all configured intervals required)`;
+      log("screening", `Cooldown exception granted for ${pool.name} (${pool.pool.slice(0, 8)}): ${confirmation.reason}`);
+      eligible.push(pool);
+    }
+  } else if (cooldownCandidates.length > 0) {
+    for (const pool of cooldownCandidates) {
+      pushFilteredReason(filteredOut, pool, pool._cooldownReason);
     }
   }
 

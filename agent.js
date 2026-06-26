@@ -91,15 +91,28 @@ import { getStateSummary } from "./state.js";
 import { getLessonsForPrompt, getPerformanceSummary } from "./lessons.js";
 import { getDecisionSummary } from "./decision-log.js";
 
-// Supports OpenRouter (default) or any OpenAI-compatible local server (e.g. LM Studio)
-// To use LM Studio: set LLM_BASE_URL=http://localhost:1234/v1 and LLM_API_KEY=lm-studio in .env
+// Featherless (and any other OpenAI-compatible endpoint) via LLM_BASE_URL.
+// To use a different provider: set LLM_BASE_URL + LLM_API_KEY (or OPENROUTER_API_KEY).
 const client = new OpenAI({
-  baseURL: process.env.LLM_BASE_URL || "https://openrouter.ai/api/v1",
-  apiKey: process.env.LLM_API_KEY || process.env.OPENROUTER_API_KEY,
+  baseURL: process.env.LLM_BASE_URL || "https://api.featherless.ai/v1",
+  apiKey: process.env.LLM_API_KEY || process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY,
   timeout: 5 * 60 * 1000,
 });
 
-const DEFAULT_MODEL = process.env.LLM_MODEL || "openrouter/healer-alpha";
+const DEFAULT_MODEL = process.env.LLM_MODEL || "meta-llama/Llama-3.3-70B-Instruct";
+
+function parseToolArgs(rawArgs) {
+  if (rawArgs == null || rawArgs === "") return {};
+  try {
+    return JSON.parse(rawArgs);
+  } catch {
+    try {
+      return JSON.parse(jsonrepair(rawArgs));
+    } catch {
+      return null;
+    }
+  }
+}
 
 const MUTATING_TOOL_INTENTS = /\b(deploy|open position|add liquidity|lp into|invest in|close|exit|withdraw|remove liquidity|claim|harvest|collect|swap|convert|sell|exchange|block|unblock|blacklist|add smart wallet|remove smart wallet|add wallet|remove wallet|pin|unpin|clear lesson|add lesson|set active strategy|remove strategy|add strategy|set |change |update |self.?update|pull latest|git pull|update yourself)\b/i;
 const LIVE_DATA_TOOL_INTENTS = /\b(balance|wallet|position|portfolio|pnl|yield|range|show positions|open positions|screen|candidate|find pool|search|research|analyze|check pool|token holders|narrative|study top|top lpers?|lp behavior|who.?s lping|performance|history|stats|report|list smart wallets|list blacklist|list blocked deployers|list lessons)\b/i;
@@ -114,37 +127,8 @@ function shouldRequireRealToolUse(goal, agentType, interactive = false) {
   return interactive && LIVE_DATA_TOOL_INTENTS.test(goal);
 }
 
-function buildMessages(systemPrompt, sessionHistory, goal, providerMode = "system") {
-  if (providerMode === "user_embedded") {
-    return [
-      ...sessionHistory,
-      {
-        role: "user",
-        content: `[SYSTEM INSTRUCTIONS]\n${systemPrompt}\n\n[USER REQUEST]\n${goal}`,
-      },
-    ];
-  }
-
-  return [
-    { role: "system", content: systemPrompt },
-    ...sessionHistory,
-    { role: "user", content: goal },
-  ];
-}
-
-function isSystemRoleError(error) {
-  const message = String(error?.message || error?.error?.message || error || "");
-  return /invalid message role:\s*system/i.test(message);
-}
-
-function isToolChoiceRequiredError(error) {
-  const message = String(error?.message || error?.error?.message || error || "");
-  return /tool_choice/i.test(message) && /required/i.test(message);
-}
-
-function isThinkingModeToolChoiceError(error) {
-  const message = String(error?.message || error?.error?.message || error || "");
-  return /thinking mode does not support/i.test(message) && /tool_choice/i.test(message);
+function buildMessages(systemPrompt, sessionHistory, goal) {
+  return [{ role: "system", content: systemPrompt }, ...sessionHistory, { role: "user", content: goal }];
 }
 
 /**
@@ -156,24 +140,33 @@ function isThinkingModeToolChoiceError(error) {
  */
 export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHistory = [], agentType = "GENERAL", model = null, maxOutputTokens = null, options = {}) {
   const { interactive = false, onToolStart = null, onToolFinish = null } = options;
-  // Build dynamic system prompt with current portfolio state
-  const [portfolio, positions] = await Promise.all([getWalletBalances(), getMyPositions()]);
-  const stateSummary = getStateSummary();
-  const lessons = getLessonsForPrompt({ agentType });
-  const perfSummary = getPerformanceSummary();
-  const decisionSummary = getDecisionSummary();
-  let weightsSummary = null;
-  if (agentType === "SCREENER") {
-    try {
-      const { getWeightsSummary } = await import("./signal-weights.js");
-      const { config } = await import("./config.js");
-      if (config.darwin?.enabled) weightsSummary = getWeightsSummary();
-    } catch { /* signal-weights not critical */ }
+  // Validate sessionHistory
+  if (!Array.isArray(sessionHistory)) {
+    log("agent_error", `Invalid sessionHistory type: ${typeof sessionHistory}, resetting to empty`);
+    sessionHistory = [];
   }
-  const systemPrompt = buildSystemPrompt(agentType, portfolio, positions, stateSummary, lessons, perfSummary, weightsSummary, decisionSummary);
+  // Build dynamic system prompt with current portfolio state
+  try {
+    const [portfolio, positions] = await Promise.all([getWalletBalances(), getMyPositions()]);
+    const stateSummary = getStateSummary();
+    const lessons = getLessonsForPrompt({ agentType });
+    const perfSummary = getPerformanceSummary();
+    const decisionSummary = getDecisionSummary();
+    let weightsSummary = null;
+    if (agentType === "SCREENER") {
+      try {
+        const { getWeightsSummary } = await import("./signal-weights.js");
+        const { config } = await import("./config.js");
+        if (config.darwin?.enabled) weightsSummary = getWeightsSummary();
+      } catch { /* signal-weights not critical */ }
+    }
+    var systemPrompt = buildSystemPrompt(agentType, portfolio, positions, stateSummary, lessons, perfSummary, weightsSummary, decisionSummary);
+  } catch (initErr) {
+    log("agent_error", `Failed during agentLoop initialization: ${initErr.message}`);
+    throw new Error(`Agent initialization failed: ${initErr.message}. Check logs for details.`);
+  }
 
-  let providerMode = "system";
-  let messages = buildMessages(systemPrompt, sessionHistory, goal, providerMode);
+  let messages = buildMessages(systemPrompt, sessionHistory, goal);
 
   // Track write tools fired this session — prevent the model from calling the same
   // destructive tool twice (e.g. deploy twice, swap twice after auto-swap)
@@ -184,108 +177,52 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
   const mustUseRealTool = shouldRequireRealToolUse(goal, agentType, interactive);
   let sawToolCall = false;
   let noToolRetryCount = 0;
-  // Stays true for the whole run once a thinking-mode provider rejects tool_choice
-  let omitToolChoice = false;
 
-  let emptyStreak = 0;
   for (let step = 0; step < maxSteps; step++) {
     log("agent", `Step ${step + 1}/${maxSteps}`);
 
     try {
       const activeModel = model || DEFAULT_MODEL;
-
-      // Retry up to 3 times on transient provider errors (502, 503, 529)
-      const FALLBACK_MODEL = "stepfun/step-3.5-flash:free";
-      let response;
-      let usedModel = activeModel;
       // Force a tool call on step 0 for action intents — prevents the model from inventing deploy/close outcomes
       const ACTION_INTENTS = /\b(deploy|open|add liquidity|close|exit|withdraw|claim|swap|block|unblock)\b/i;
-      let toolChoice = (step === 0 && (ACTION_INTENTS.test(goal) || mustUseRealTool)) ? "required" : "auto";
+      const toolChoice = (step === 0 && (ACTION_INTENTS.test(goal) || mustUseRealTool)) ? "required" : "auto";
 
+      // Retry up to 3 times on transient provider errors (rate limit / overloaded / server error)
+      let response;
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const reqParams = {
-            model: usedModel,
+          response = await client.chat.completions.create({
+            model: activeModel,
             messages,
             tools: getToolsForRole(agentType, goal),
+            tool_choice: toolChoice,
             temperature: config.llm.temperature,
             max_tokens: maxOutputTokens ?? config.llm.maxTokens,
-          };
-          if (!omitToolChoice) reqParams.tool_choice = toolChoice;
-          response = await client.chat.completions.create(reqParams);
+          });
+          break;
         } catch (error) {
-          if (providerMode === "system" && isSystemRoleError(error)) {
-            providerMode = "user_embedded";
-            messages = buildMessages(systemPrompt, sessionHistory, goal, providerMode);
-            log("agent", "Provider rejected system role — retrying with embedded system instructions");
-            attempt -= 1;
-            continue;
-          }
-          if (toolChoice === "required" && isToolChoiceRequiredError(error)) {
-            toolChoice = "auto";
-            log("agent", "Provider rejected tool_choice=required — retrying with tool_choice=auto");
-            attempt -= 1;
-            continue;
-          }
-          if (!omitToolChoice && isThinkingModeToolChoiceError(error)) {
-            omitToolChoice = true;
-            log("agent", "Provider thinking mode does not support tool_choice — retrying without it");
-            attempt -= 1;
+          const status = error?.status;
+          if ((status === 429 || status === 500 || status === 502 || status === 503 || status === 529) && attempt < 2) {
+            const wait = (attempt + 1) * 5000;
+            log("agent", `Provider error ${status}, retrying in ${wait / 1000}s (attempt ${attempt + 1}/3)`);
+            await new Promise((r) => setTimeout(r, wait));
             continue;
           }
           throw error;
         }
-        if (response.choices?.length) break;
-        const errCode = response.error?.code;
-        if (errCode === 502 || errCode === 503 || errCode === 529) {
-          const wait = (attempt + 1) * 5000;
-          if (attempt === 1 && usedModel !== FALLBACK_MODEL) {
-            usedModel = FALLBACK_MODEL;
-            log("agent", `Switching to fallback model ${FALLBACK_MODEL}`);
-          } else {
-            log("agent", `Provider error ${errCode}, retrying in ${wait / 1000}s (attempt ${attempt + 1}/3)`);
-            await new Promise((r) => setTimeout(r, wait));
-          }
-        } else {
-          break;
-        }
       }
 
-      if (!response.choices?.length) {
-        log("error", `Bad API response: ${JSON.stringify(response).slice(0, 200)}`);
-        throw new Error(`API returned no choices: ${response.error?.message || JSON.stringify(response)}`);
-      }
-      const msg = response.choices[0].message;
-      const invalidToolArgErrors = new Map();
-      // Keep tool-call history API-valid, but never execute unrecoverable args.
-      if (msg.tool_calls) {
-        for (const tc of msg.tool_calls) {
-          if (tc.function?.arguments) {
-            try {
-              JSON.parse(tc.function.arguments);
-            } catch {
-              try {
-                tc.function.arguments = JSON.stringify(JSON.parse(jsonrepair(tc.function.arguments)));
-                log("warn", `Repaired malformed JSON args for ${tc.function.name}`);
-              } catch {
-                tc.function.arguments = "{}";
-                const error = `Invalid tool arguments for ${tc.function.name}`;
-                invalidToolArgErrors.set(tc.id, error);
-                log("error", `${error}: could not repair JSON`);
-              }
-            }
-          }
-        }
-      }
-      messages.push(msg);
+      const message = response.choices[0].message;
+      const toolCalls = message.tool_calls || [];
+      const textContent = (message.content || "").trim();
+
+      messages.push(message);
 
       // If the model didn't call any tools, it's done
-      if (!msg.tool_calls || msg.tool_calls.length === 0) {
-        // Hermes sometimes returns null content — pop the empty message and retry once
-        if (!msg.content) {
-          messages.pop(); // remove the empty assistant message
-          log("agent", "Empty response, retrying...");
-          continue;
+      if (toolCalls.length === 0) {
+        if (!textContent) {
+          log("error", `Empty response with no tool calls (finish_reason: ${response.choices[0].finish_reason})`);
+          return { content: "The model returned an empty response. Please retry.", userMessage: goal };
         }
         if (mustUseRealTool && !sawToolCall) {
           noToolRetryCount += 1;
@@ -298,75 +235,34 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
             };
           }
           messages.push({
-            role: providerMode === "system" ? "system" : "user",
-            content: providerMode === "system"
-              ? "You have not used any tool yet. This request requires real tool execution or live tool-backed data. Do not answer from memory or inference. Call the appropriate tool first, then report only the real result."
-              : "[SYSTEM REMINDER]\nYou have not used any tool yet. This request requires real tool execution or live tool-backed data. Do not answer from memory or inference. Call the appropriate tool first, then report only the real result.",
+            role: "user",
+            content: "You have not used any tool yet. This request requires real tool execution or live tool-backed data. Do not answer from memory or inference. Call the appropriate tool first, then report only the real result.",
           });
           continue;
         }
         log("agent", "Final answer reached");
-        log("agent", msg.content);
-        return { content: msg.content, userMessage: goal };
+        log("agent", textContent);
+        return { content: textContent, userMessage: goal };
       }
       sawToolCall = true;
 
       // Execute each tool call in parallel
-      const toolResults = await Promise.all(msg.tool_calls.map(async (toolCall) => {
-        const functionName = toolCall.function.name.replace(/<.*$/, "").trim();
-        let functionArgs;
+      const toolResults = await Promise.all(toolCalls.map(async (toolCall) => {
+        const functionName = toolCall.function.name;
+        const functionArgs = parseToolArgs(toolCall.function.arguments);
 
-        if (invalidToolArgErrors.has(toolCall.id)) {
-          const result = {
-            success: false,
-            error: invalidToolArgErrors.get(toolCall.id),
-            blocked: true,
-          };
-          await onToolFinish?.({ name: functionName, args: {}, result, success: false, step });
-          return {
-            role: "tool",
-            tool_call_id: toolCall.id,
-            content: JSON.stringify(result),
-          };
-        }
-
-        try {
-          functionArgs = JSON.parse(toolCall.function.arguments);
-        } catch {
-          try {
-            functionArgs = JSON.parse(jsonrepair(toolCall.function.arguments));
-            log("warn", `Repaired malformed JSON args for ${functionName}`);
-          } catch (parseError) {
-            log("error", `Failed to parse args for ${functionName}: ${parseError.message}`);
-            const result = {
-              success: false,
-              error: `Invalid tool arguments for ${functionName}`,
-              blocked: true,
-            };
-            await onToolFinish?.({ name: functionName, args: {}, result, success: false, step });
-            return {
-              role: "tool",
-              tool_call_id: toolCall.id,
-              content: JSON.stringify(result),
-            };
-          }
+        if (functionArgs === null) {
+          const result = { blocked: true, reason: `Malformed arguments for ${functionName} — could not parse as JSON even after repair.` };
+          await onToolFinish?.({ name: functionName, args: toolCall.function.arguments, result, success: false, step });
+          return { tool_call_id: toolCall.id, content: JSON.stringify(result) };
         }
 
         // Block once-per-session tools from firing a second time
         if (ONCE_PER_SESSION.has(functionName) && firedOnce.has(functionName)) {
           log("agent", `Blocked duplicate ${functionName} call — already executed this session`);
-          await onToolFinish?.({
-            name: functionName,
-            args: functionArgs,
-            result: { blocked: true, reason: `${functionName} already attempted this session — do not retry. If it failed, report the error and stop.` },
-            success: false,
-            step,
-          });
-          return {
-            role: "tool",
-            tool_call_id: toolCall.id,
-            content: JSON.stringify({ blocked: true, reason: `${functionName} already attempted this session — do not retry. If it failed, report the error and stop.` }),
-          };
+          const result = { blocked: true, reason: `${functionName} already attempted this session — do not retry. If it failed, report the error and stop.` };
+          await onToolFinish?.({ name: functionName, args: functionArgs, result, success: false, step });
+          return { tool_call_id: toolCall.id, content: JSON.stringify(result) };
         }
 
         await onToolStart?.({ name: functionName, args: functionArgs, step });
@@ -384,14 +280,12 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
         if (NO_RETRY_TOOLS.has(functionName)) firedOnce.add(functionName);
         else if (ONCE_PER_SESSION.has(functionName) && result.success === true) firedOnce.add(functionName);
 
-        return {
-          role: "tool",
-          tool_call_id: toolCall.id,
-          content: JSON.stringify(result),
-        };
+        return { tool_call_id: toolCall.id, content: JSON.stringify(result) };
       }));
 
-      messages.push(...toolResults);
+      for (const toolResult of toolResults) {
+        messages.push({ role: "tool", tool_call_id: toolResult.tool_call_id, content: toolResult.content });
+      }
     } catch (error) {
       log("error", `Agent loop error at step ${step}: ${error.message}`);
 

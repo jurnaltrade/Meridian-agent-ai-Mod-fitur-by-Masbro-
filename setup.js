@@ -240,11 +240,6 @@ const rpcUrl = await ask(
   ev("RPC_URL", e("rpcUrl", "https://api.mainnet-beta.solana.com"))
 );
 
-const heliusKey = await ask(
-  "Helius API key (for balance lookups, optional)",
-  alreadySet(ev("HELIUS_API_KEY", ""))
-);
-
 // ─── Section 2: Telegram ──────────────────────────────────────────────────────
 console.log("\n── Telegram (optional — skip to disable) ─────────────────────");
 
@@ -648,7 +643,6 @@ const envMap = {
   ...(isKept(openrouterKey) ? {} : { OPENROUTER_API_KEY: openrouterKey }),
   ...(isKept(walletKey)     ? {} : { WALLET_PRIVATE_KEY: walletKey }),
   ...(rpcUrl                ? { RPC_URL: rpcUrl } : {}),
-  ...(isKept(heliusKey)     ? {} : { HELIUS_API_KEY: heliusKey }),
   ...(isKept(telegramToken) ? {} : { TELEGRAM_BOT_TOKEN: telegramToken }),
   ...(telegramChatId        ? { TELEGRAM_CHAT_ID: telegramChatId } : {}),
   DRY_RUN: dryRun ? "true" : "false",
