@@ -373,7 +373,8 @@ export async function createLiveMessage(title, intro = "Starting...") {
   }
 
   _liveMessageDepth += 1;
-  await flushNow();
+  // Don't send initial message - wait for finalize() to send the complete alert
+  // await flushNow();
 
   return {
     async toolStart(name) {
