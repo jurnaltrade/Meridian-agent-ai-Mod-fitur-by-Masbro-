@@ -43,6 +43,60 @@ const indexPath = fileURLToPath(import.meta.url);
 const isMain = process.env.pm_id != null
   || (entrypointPath ? path.resolve(entrypointPath) === indexPath : false);
 
+// ─── Alert Formatting ─────────────────────────────────────────────
+function formatManagementAlert(positions, actionMap, totalValue, totalUnclaimed, cur) {
+  if (positions.length === 0) return "📊 <b>Management Cycle</b>\n✓ No open positions";
+
+  const actions = { CLOSE: 0, CLAIM: 0, STAY: 0, INSTRUCTION: 0 };
+  const details = positions.map((p) => {
+    const act = actionMap.get(p.position);
+    if (act) actions[act.action]++;
+
+    const inRange = p.in_range ? "🟢" : "🔴";
+    const icon = act.action === "CLOSE" ? "🔴" : act.action === "CLAIM" ? "💰" : act.action === "INSTRUCTION" ? "⚙️" : "✓";
+
+    return `${icon} <b>${p.pair}</b>\n  ${inRange} ${p.age_minutes}m | ${cur}${p.total_value_usd?.toFixed(2) ?? "?"} | PnL ${p.pnl_pct >= 0 ? "+" : ""}${p.pnl_pct ?? "?"}%`;
+  });
+
+  const summary = [
+    actions.CLOSE > 0 && `🔴 Close: ${actions.CLOSE}`,
+    actions.CLAIM > 0 && `💰 Claim: ${actions.CLAIM}`,
+    actions.INSTRUCTION > 0 && `⚙️ Eval: ${actions.INSTRUCTION}`,
+  ].filter(Boolean).join(" | ");
+
+  return [
+    `📊 <b>Management Cycle</b> (${positions.length} position${positions.length !== 1 ? "s" : ""})`,
+    `Portfolio: ${cur}${totalValue.toFixed(2)} | Fees: ${cur}${totalUnclaimed.toFixed(2)}`,
+    summary || "✓ All HOLD",
+    "",
+    details.join("\n"),
+  ].join("\n");
+}
+
+function formatScreeningAlert(report) {
+  if (!report) return null;
+
+  // Extract key info from report
+  const hasError = /error|failed/i.test(report);
+  const hasDeploy = /✅|success|deploy/i.test(report);
+  const noDeployMatch = report.match(/🔴\s*NO DEPLOY|no candidates/i);
+
+  if (hasError) {
+    return `❌ <b>Screening Cycle</b>\n${report.slice(0, 150)}`;
+  }
+
+  if (hasDeploy && !noDeployMatch) {
+    return `✅ <b>Screening Cycle</b>\n<b>Deployed!</b>\n${report}`;
+  }
+
+  if (noDeployMatch) {
+    const lines = report.split("\n").slice(0, 5);
+    return `⏭️ <b>Screening Cycle</b>\n${lines.join("\n")}`;
+  }
+
+  return `🔍 <b>Screening Cycle</b>\n${report.slice(0, 200)}`;
+}
+
 if (isMain) {
   log("startup", "DLMM LP Agent starting...");
   log("startup", `Repo: ${REPO_ROOT} | cwd: ${process.cwd()}${process.env.pm_id ? ` | PM2 id: ${process.env.pm_id}` : ""}`);
@@ -238,9 +292,9 @@ export async function runManagementCycle({ silent = false } = {}) {
 
     if (positions.length === 0) {
       log("cron", "No open positions — triggering screening cycle");
-      mgmtReport = "No open positions. Triggering screening cycle.";
+      mgmtReport = "📊 <b>Management Cycle</b>\n✓ No open positions — triggering screening...";
       runScreeningCycle().catch((e) => log("cron_error", `Triggered screening failed: ${e.message}`));
-      return mgmtReport;
+      throw new Error("no_open_positions");
     }
 
     // Snapshot + load pool memory
@@ -314,8 +368,10 @@ export async function runManagementCycle({ silent = false } = {}) {
       : "no action";
 
     const cur = config.management.solMode ? "◎" : "$";
-    mgmtReport = reportLines.join("\n\n") +
-      `\n\nSummary: ${positions.length} positions · ${cur}${totalValue.toFixed(4)} · fees ${cur}${totalUnclaimed.toFixed(4)} · ${actionSummary}`;
+    // Use formatted alert for Telegram display
+    const telegramAlert = formatManagementAlert(positionData, actionMap, totalValue, totalUnclaimed, cur);
+    // Keep internal report detailed for logging
+    mgmtReport = telegramAlert;
 
     // ── Call LLM only if action needed ──────────────────────────────
     const actionPositions = positionData.filter(p => {
@@ -374,29 +430,27 @@ export async function runScreeningCycle({ silent = false } = {}) {
     [prePositions, preBalance] = await Promise.all([getMyPositions({ force: true }), getWalletBalances()]);
     if (prePositions.total_positions >= config.risk.maxPositions) {
       log("cron", `Screening skipped — max positions reached (${prePositions.total_positions}/${config.risk.maxPositions})`);
-      screenReport = `Screening skipped — max positions reached (${prePositions.total_positions}/${config.risk.maxPositions}).`;
+      screenReport = `📊 <b>Screening Cycle</b>\n⏸️ Max positions reached (${prePositions.total_positions}/${config.risk.maxPositions})`;
       appendDecision({
         type: "skip",
         actor: "SCREENER",
         summary: "Screening skipped",
         reason: `Max positions reached (${prePositions.total_positions}/${config.risk.maxPositions})`,
       });
-      _screeningBusy = false;
-      return screenReport;
+      throw new Error("max_positions_reached");
     }
     const minRequired = config.management.deployAmountSol + config.management.gasReserve;
     const isDryRun = process.env.DRY_RUN === "true";
     if (!isDryRun && preBalance.sol < minRequired) {
       log("cron", `Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} < ${minRequired} needed for deploy + gas)`);
-      screenReport = `Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} < ${minRequired} needed for deploy + gas).`;
+      screenReport = `🔍 <b>Screening Cycle</b>\n⏸️ Insufficient SOL (◎${preBalance.sol.toFixed(3)} < ◎${minRequired})`;
       appendDecision({
         type: "skip",
         actor: "SCREENER",
         summary: "Screening skipped",
         reason: `Insufficient SOL (${preBalance.sol.toFixed(3)} < ${minRequired})`,
       });
-      _screeningBusy = false;
-      return screenReport;
+      throw new Error("insufficient_sol");
     }
   } catch (e) {
     log("cron_error", `Screening pre-check failed: ${e.message}`);
@@ -678,8 +732,11 @@ IMPORTANT:
     _screeningBusy = false;
     if (!silent && telegramEnabled()) {
       if (screenReport) {
-        if (liveMessage) await liveMessage.finalize(stripThink(screenReport)).catch(() => {});
-        else sendMessage(`Screening Cycle\n\n${stripThink(screenReport)}`).catch(() => { });
+        const formattedAlert = formatScreeningAlert(screenReport);
+        if (formattedAlert) {
+          if (liveMessage) await liveMessage.finalize(stripThink(formattedAlert)).catch(() => {});
+          else sendHTML(formattedAlert).catch(() => { });
+        }
       }
     }
   }
@@ -1777,8 +1834,12 @@ async function telegramHandler(msg) {
     if (liveMessage) await liveMessage.finalize(stripThink(content));
     else await sendMessage(stripThink(content));
   } catch (e) {
-    if (liveMessage) await liveMessage.fail(e.message).catch(() => {});
-    else await sendMessage(`Error: ${e.message}`).catch(() => {});
+    log("telegram_error", `Error handling Telegram message: ${e.message}\n${e.stack}`);
+    const errorMsg = e.message?.includes("Agent initialization")
+      ? "Agent system error (state may be corrupted). Attempting recovery..."
+      : e.message || "Unknown error";
+    if (liveMessage) await liveMessage.fail(errorMsg).catch(() => {});
+    else await sendMessage(`Error: ${errorMsg}`).catch(() => {});
   } finally {
     busy = false;
     refreshPrompt();

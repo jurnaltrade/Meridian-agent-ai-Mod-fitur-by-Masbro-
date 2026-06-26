@@ -33,17 +33,44 @@ function load() {
     return { positions: {}, recentEvents: [], lastUpdated: null };
   }
   try {
-    return JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
+    const data = fs.readFileSync(STATE_FILE, "utf8");
+    if (!data.trim()) {
+      log("state_recovery", "state.json is empty, returning default state");
+      return { positions: {}, recentEvents: [], lastUpdated: null };
+    }
+    return JSON.parse(data);
   } catch (err) {
-    log("state_error", `Failed to read state.json: ${err.message}`);
-    return { positions: {}, lastUpdated: null };
+    log("state_recovery", `Failed to read state.json: ${err.message} — attempting backup recovery`);
+    // Try to recover from backup if it exists
+    const backupFile = STATE_FILE + ".backup";
+    if (fs.existsSync(backupFile)) {
+      try {
+        const backupData = JSON.parse(fs.readFileSync(backupFile, "utf8"));
+        log("state_recovery", "✅ Recovered from state.json.backup");
+        // Restore the backup as the main file
+        fs.writeFileSync(STATE_FILE, fs.readFileSync(backupFile));
+        return backupData;
+      } catch (backupErr) {
+        log("state_recovery", `Backup also corrupted: ${backupErr.message}`);
+      }
+    }
+    log("state_recovery", "⚠️ Could not recover state — starting with empty state (positions may need manual reconciliation)");
+    return { positions: {}, recentEvents: [], lastUpdated: null };
   }
 }
 
 function save(state) {
   try {
     state.lastUpdated = new Date().toISOString();
-    fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+    const tempFile = STATE_FILE + ".tmp";
+    // Write to temp file first (atomic write)
+    fs.writeFileSync(tempFile, JSON.stringify(state, null, 2));
+    // Create backup of current state before overwriting
+    if (fs.existsSync(STATE_FILE)) {
+      fs.copyFileSync(STATE_FILE, STATE_FILE + ".backup");
+    }
+    // Move temp to actual file
+    fs.renameSync(tempFile, STATE_FILE);
   } catch (err) {
     log("state_error", `Failed to write state.json: ${err.message}`);
   }

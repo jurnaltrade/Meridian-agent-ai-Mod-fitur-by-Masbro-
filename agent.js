@@ -140,21 +140,31 @@ function buildMessages(systemPrompt, sessionHistory, goal) {
  */
 export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHistory = [], agentType = "GENERAL", model = null, maxOutputTokens = null, options = {}) {
   const { interactive = false, onToolStart = null, onToolFinish = null } = options;
-  // Build dynamic system prompt with current portfolio state
-  const [portfolio, positions] = await Promise.all([getWalletBalances(), getMyPositions()]);
-  const stateSummary = getStateSummary();
-  const lessons = getLessonsForPrompt({ agentType });
-  const perfSummary = getPerformanceSummary();
-  const decisionSummary = getDecisionSummary();
-  let weightsSummary = null;
-  if (agentType === "SCREENER") {
-    try {
-      const { getWeightsSummary } = await import("./signal-weights.js");
-      const { config } = await import("./config.js");
-      if (config.darwin?.enabled) weightsSummary = getWeightsSummary();
-    } catch { /* signal-weights not critical */ }
+  // Validate sessionHistory
+  if (!Array.isArray(sessionHistory)) {
+    log("agent_error", `Invalid sessionHistory type: ${typeof sessionHistory}, resetting to empty`);
+    sessionHistory = [];
   }
-  const systemPrompt = buildSystemPrompt(agentType, portfolio, positions, stateSummary, lessons, perfSummary, weightsSummary, decisionSummary);
+  // Build dynamic system prompt with current portfolio state
+  try {
+    const [portfolio, positions] = await Promise.all([getWalletBalances(), getMyPositions()]);
+    const stateSummary = getStateSummary();
+    const lessons = getLessonsForPrompt({ agentType });
+    const perfSummary = getPerformanceSummary();
+    const decisionSummary = getDecisionSummary();
+    let weightsSummary = null;
+    if (agentType === "SCREENER") {
+      try {
+        const { getWeightsSummary } = await import("./signal-weights.js");
+        const { config } = await import("./config.js");
+        if (config.darwin?.enabled) weightsSummary = getWeightsSummary();
+      } catch { /* signal-weights not critical */ }
+    }
+    var systemPrompt = buildSystemPrompt(agentType, portfolio, positions, stateSummary, lessons, perfSummary, weightsSummary, decisionSummary);
+  } catch (initErr) {
+    log("agent_error", `Failed during agentLoop initialization: ${initErr.message}`);
+    throw new Error(`Agent initialization failed: ${initErr.message}. Check logs for details.`);
+  }
 
   let messages = buildMessages(systemPrompt, sessionHistory, goal);
 
