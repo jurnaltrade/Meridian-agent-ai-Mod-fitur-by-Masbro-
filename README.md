@@ -69,7 +69,7 @@ Agents are powered via **OpenRouter** and can be swapped for any compatible mode
 ### 1. Clone & install
 
 ```bash
-git clone https://github.com/yunus-0x/meridian
+git clone https://github.com/jurnaltrade/Meridian-agent-ai-Mod-fitur-by-Masbro-.git
 cd meridian
 npm install
 ```
