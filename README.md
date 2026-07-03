@@ -1,27 +1,36 @@
-# Meridian
+# Meridian by Masbro 
 
-**Autonomous Meteora DLMM liquidity management agent for Solana, powered by LLMs.**
+**Agen manajemen likuiditas Meteora DLMM otomatis untuk Solana, yang ditenagai oleh LLM.** 
 
-**Links:** [Website](https://agentmeridian.xyz) | [Telegram](https://t.me/agentmeridian) | [X](https://x.com/meridian_agent)
+**Tautan:**
 
-Meridian runs continuous screening and management cycles, deploying capital into high-quality Meteora DLMM pools and closing positions based on live PnL, yield, and range data. It learns from every position it closes.
+[Situs Web](https://agentmeridian.xyz) | [Telegram](https://t.me/agentmeridian) | [X](https://x.com/meridian_agent) Meridian menjalankan siklus penyaringan dan manajemen berkelanjutan, mengalokasikan modal ke dalam pool Meteora DLMM berkualitas tinggi serta menutup posisi berdasarkan data *real-time* terkait PnL, imbal hasil (*yield*), dan rentang (*range*). Agen ini belajar dari setiap posisi yang ditutupnya. --- #
 
----
+# Apa yang dilakukannya - 
 
-## What it does
+**Menyaring pool** — memindai pool Meteora DLMM berdasarkan ambang batas yang dapat dikonfigurasi (rasio biaya/TVL, skor organik, jumlah pemegang, kapitalisasi pasar, *bin step*) dan menampilkan peluang berkualitas tinggi - 
 
-- **Screens pools** — scans Meteora DLMM pools against configurable thresholds (fee/TVL ratio, organic score, holder count, mcap, bin step) and surfaces high-quality opportunities
-- **Manages positions** — monitors, claims fees, and closes LP positions autonomously; decides to STAY, CLOSE, or REDEPLOY based on live data
-- **Learns from performance** — studies top LPers in target pools, saves structured lessons, and evolves screening thresholds based on closed position history
-- **Discord signals** — optional Discord listener watches LP Army channels for Solana token calls and queues them for screening
-- **Telegram chat** — full agent chat via Telegram, plus cycle reports and OOR alerts
-- **Claude Code integration** — run AI-powered screening and management directly from your terminal using Claude Code slash commands
+**Mengelola posisi** 
 
----
+— memantau, mengklaim biaya, dan menutup posisi LP secara otonom; memutuskan untuk BERTAHAN (*STAY*), MENUTUP (*CLOSE*), atau MENEMPATKAN KEMBALI (*REDEPLOY*) berdasarkan data *real-time* - 
 
-## How it works
 
-Meridian runs a **ReAct agent loop** — each cycle the LLM reasons over live data, calls tools, and acts. Two specialized agents run on independent cron schedules:
+**Belajar dari kinerja** 
+
+— mempelajari penyedia likuiditas (LP) terbaik di pool target, menyimpan pelajaran terstruktur, dan mengembangkan ambang batas penyaringan berdasarkan riwayat posisi yang telah ditutup - 
+
+**Sinyal Discord** 
+— fitur opsional pemantau Discord yang mengawasi saluran LP Army untuk mendapatkan rekomendasi token Solana dan memasukkannya ke dalam antrean penyaringan - 
+
+**Obrolan Telegram** 
+— interaksi penuh dengan agen melalui Telegram, ditambah laporan siklus dan peringatan OOR (*Out-of-Range*) - 
+
+**Integrasi Claude Code** 
+— menjalankan penyaringan dan manajemen berbasis AI langsung dari terminal Anda menggunakan perintah *slash* Claude Code --- ## Cara kerjanya Meridian menjalankan 
+
+**loop agen ReAct** 
+— pada setiap siklus, LLM melakukan penalaran berdasarkan data *real-time*, memanggil *tools* (alat bantu), dan melakukan tindakan. Dua agen khusus beroperasi berdasarkan jadwal *cron* yang independen:
+
 
 | Agent | Default interval | Role |
 |---|---|---|
