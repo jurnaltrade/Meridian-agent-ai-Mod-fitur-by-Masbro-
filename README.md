@@ -39,9 +39,7 @@
 
 ### Agent harness
 
-Meridian's agent harness is the runtime wrapper around every autonomous cycle. It gives both **main** and **experimental** agents the same control loop: load live state, inject relevant memory, expose only role-appropriate tools, execute tool calls, and return a readable cycle report.
-
-The harness also keeps a structured decision log in `decision-log.json` for deployments, closes, skips, and no-deploy outcomes. Each entry records the actor, pool or position, summary, reason, key risks, metrics, and rejected alternatives. Recent decisions are injected back into the system prompt and are available through `get_recent_decisions`, so the agent can answer "why did you deploy?", "why did you close?", or "why did you skip?" without guessing after the fact.
+*Harness* agen Meridian berfungsi sebagai *wrapper* waktu-jalan (*runtime wrapper*) untuk setiap siklus otonom. Komponen ini memberikan *loop* kendali yang sama bagi agen **utama** maupun **eksperimental**: memuat status terkini (*live state*), memasukkan memori yang relevan, hanya menyediakan *tools* yang sesuai dengan peran, mengeksekusi pemanggilan *tools*, serta menghasilkan laporan siklus yang mudah dipahami. *Harness* ini juga menyimpan log keputusan terstruktur dalam `decision-log.json` untuk hasil berupa *deployment*, penutupan (*close*), pelompatan (*skip*), dan keputusan untuk tidak melakukan *deployment*. Setiap entri mencatat aktor, *pool* atau posisi, ringkasan, alasan, risiko utama, metrik, serta alternatif yang ditolak. Keputusan-keputusan terkini dimasukkan kembali ke dalam *system prompt* dan dapat diakses melalui `get_recent_decisions`, sehingga agen dapat menjawab pertanyaan seperti "mengapa Anda melakukan *deployment*?", "mengapa Anda menutupnya?", atau "mengapa Anda melompatinya?" tanpa harus menebak-nebak setelah kejadian berlalu.
 
 **Data sources:**
 - `@meteora-ag/dlmm` SDK — on-chain position data, active bin, deploy/close transactions
