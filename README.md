@@ -59,15 +59,8 @@ Buka short kecil di perp DEX (Drift/Zeta/dst) untuk hedge exposure arah harga sa
 Deteksi burst volume yang baru landing, deploy posisi sangat sempit buat nangkep fee dari continuation flow, auto-close cepat.
 
 🔴 Paling spekulatif — wajib backtest pakai DRY_RUN=true dulu, cek win rate via get_jit_summary() sebelum nyalain dengan dana asli.
-Yang menempel ke sistem (bukan modul baru, tapi jadi jembatan):
-config.js — 6 blok konfigurasi baru untuk semua fitur di atas
-tools/definitions.js —
 
-13 tool baru yang bisa dipanggil LLM
-tools/executor.js — hook otomatis (hedge auto-buka/tutup, bandit record outcome, insurance skim dari claim fee)
-prompt.js — instruksi ke LLM kapan pakai tool-tool ini
 
-Status ringkas: 5 fitur aktif otomatis setelah upload+restart, 2 fitur (hedge & JIT) mati by default sampai kamu konfigurasi manual — sesuai urutan rollout yang aman di INTEGRATION.md
 
 # Apa yang dilakukannya - 
 
