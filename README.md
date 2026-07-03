@@ -1,4 +1,4 @@
-# Meridian by Masbro 
+# Meridian spesial fitur by Masbro 
 
 **Agen manajemen likuiditas Meteora DLMM otomatis untuk Solana, yang ditenagai oleh LLM.** 
 
