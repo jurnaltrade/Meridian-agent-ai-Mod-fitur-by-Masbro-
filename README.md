@@ -4,7 +4,9 @@
 
 **Tautan:**
 
-[Situs Web](https://agentmeridian.xyz) | [Telegram](https://t.me/agentmeridian) | [X](https://x.com/meridian_agent) Meridian menjalankan siklus penyaringan dan manajemen berkelanjutan, mengalokasikan modal ke dalam pool Meteora DLMM berkualitas tinggi serta menutup posisi berdasarkan data *real-time* terkait PnL, imbal hasil (*yield*), dan rentang (*range*). Agen ini belajar dari setiap posisi yang ditutupnya. --- #
+[Situs Web](https://agentmeridian.xyz) | [Telegram](https://t.me/agentmeridian) | [X](https://x.com/meridian_agent) 
+
+Meridian menjalankan siklus penyaringan dan manajemen berkelanjutan, mengalokasikan modal ke dalam pool Meteora DLMM berkualitas tinggi serta menutup posisi berdasarkan data *real-time* terkait PnL, imbal hasil (*yield*), dan rentang (*range*). Agen ini belajar dari setiap posisi yang ditutupnya. --- #
 
 # Apa yang dilakukannya - 
 
